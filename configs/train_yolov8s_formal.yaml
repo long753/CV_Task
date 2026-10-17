@@ -1,0 +1,65 @@
+# Formal local baseline. Start from COCO pretraining, not the two-epoch pilot.
+# All paths are relative to this file. Test data is not used during training.
+run_type: formal
+model: ../models/pretrained/yolov8s.pt
+data: ../datasets/processed/crack_detection/data.yaml
+project: ../outputs/training
+name: yolov8s_formal
+
+training:
+  epochs: 150
+  fraction: 1.0
+  imgsz: 640
+  batch: 2
+  nbs: 16
+  device: 0
+  workers: 2
+  seed: 42
+  deterministic: true
+  amp: true
+  optimizer: AdamW
+  lr0: 0.001
+  lrf: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  cos_lr: true
+  # Fixed training budget; best.pt is selected by validation mAP50-95.
+  patience: 0
+  val: true
+  max_det: 100
+  cache: false
+  rect: false
+  mosaic: 0.0
+  close_mosaic: 0
+  mixup: 0.0
+  copy_paste: 0.0
+  degrees: 0.0
+  translate: 0.0
+  scale: 0.0
+  shear: 0.0
+  perspective: 0.0
+  fliplr: 0.5
+  flipud: 0.0
+  hsv_h: 0.0
+  hsv_s: 0.0
+  hsv_v: 0.1
+  plots: true
+  save: true
+  save_period: 25
+  exist_ok: false
+
+evaluation:
+  score_floor: 0.001
+  confidence: 0.25
+  match_iou: 0.5
+  nms_iou: 0.7
+  max_detections: 100
+  preview_count: 6
+
+benchmark:
+  imgsz: 640
+  precision: fp32
+  warmup: 50
+  iterations: 300
+  image_count: 6

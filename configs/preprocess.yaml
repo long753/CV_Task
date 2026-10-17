@@ -1,0 +1,60 @@
+# Paths are resolved relative to this configuration file, not the shell directory.
+schema_version: 1
+dataset_root: ../datasets/CrackDataset
+output_dir: ../datasets/processed/crack_detection
+seed: 42
+# Flag perceptually similar cross-split images for review; do not auto-merge them.
+near_duplicate_hamming_distance: 4
+split_ratios:
+  train: 0.7
+  val: 0.1
+  test: 0.2
+mask:
+  background_values: [0]
+  # Scalar/1-bit masks use raw 0/1. Palette indices are resolved separately:
+  # Asphalt white is index 0; CFD supplemental white is index 1.
+  foreground_values: [1]
+  palette_foreground_rgb: [255, 255, 255]
+  palette_background_rgb: [0, 0, 0]
+  # Preserve all annotated components initially; choose filtering from training-data inspection.
+  min_component_area: 1
+  closing_kernel_size: 3
+  closing_iterations: 0
+previews_per_source: 6
+# Explicit provenance for exceptional names; unknown names otherwise fail the audit.
+group_overrides: {}
+# User-approved quarantine: keep raw files/manifest records; never export these samples.
+# 001/002 have identical decoded RGB tiles but different masks; no authoritative label.
+quarantine_samples:
+  AsphaltCrack300_001_04: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_04: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_05: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_05: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_10: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_10: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_11: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_11: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_15: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_15: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_16: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_16: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_20: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_20: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_21: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_21: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_22: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_22: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_26: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_26: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_28: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_28: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_32: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_32: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_33: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_33: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_001_34: conflicting_masks_for_identical_rgb
+  AsphaltCrack300_002_34: conflicting_masks_for_identical_rgb
+  CFD_img1: supplemental_image_provenance_unverified
+  CFD_img2: supplemental_image_provenance_unverified
+  CFD_img3: supplemental_image_provenance_unverified
+  CFD_img4: supplemental_image_provenance_unverified

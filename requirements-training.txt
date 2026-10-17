@@ -1,0 +1,9 @@
+# Install only inside the user-authorized cv_task environment.
+# CUDA wheels are obtained from the official PyTorch index.
+--extra-index-url https://download.pytorch.org/whl/cu128
+-r requirements.txt
+torch==2.8.0+cu128
+torchvision==0.23.0+cu128
+ultralytics==8.3.221
+pycocotools==2.0.10
+tensorboard==2.21.0

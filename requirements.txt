@@ -1,0 +1,6 @@
+# Preprocessing only. Run inside the user-selected cv_task environment.
+# Declaring dependencies does not install or modify any Python environment.
+numpy>=1.24
+opencv-python>=4.8
+Pillow>=10
+PyYAML>=6
