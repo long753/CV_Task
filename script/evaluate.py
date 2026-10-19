@@ -4,9 +4,9 @@
 在 cv_task 项目根目录执行：
 python script/evaluate.py \
   --config configs/train_ultralytics.yaml \
-  --weights models/trained/yolov8s_formal/best.pt \
+  --weights models/trained/yolov11s_formal/best.pt \
   --split val \
-  --output outputs/evaluation/yolov8s_val \
+  --output outputs/evaluation/yolov11s_val \
   --benchmark
 
 参数说明：

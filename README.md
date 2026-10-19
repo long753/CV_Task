@@ -350,3 +350,8 @@ CFD `005` 的低对比度细长裂缝漏检；crack500 `081113_1281_361` 有边�
   原训练 Loss 的 1–150 步仍完整。未重新训练正式实验或覆盖正式测试结论。
 
 完整验收字段保存在 `audit/cleanup_manifest.json` 的 `verification` 中。
+
+
+uv run python script/prepare_dataset.py \
+  --stage validate \
+  --output datasets/processed/crack_detection

@@ -1,0 +1,26 @@
+[project]
+name = "cv-task"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.8.0+cu128",
+    "torchvision==0.23.0+cu128",
+    "numpy==2.5.3",
+    "opencv-python==5.0.0.93",
+    "Pillow==12.3.0",
+    "PyYAML==6.0.3",
+    "ultralytics==8.3.221",
+    "pycocotools==2.0.10",
+    "matplotlib==3.11.2",
+    "ultralytics-thop==2.2.2",
+    "tensorboard==2.21.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
