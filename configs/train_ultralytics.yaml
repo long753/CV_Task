@@ -1,11 +1,13 @@
-# Formal local baseline. Start from COCO pretraining, not the two-epoch pilot.
-# All paths are relative to this file. Test data is not used during training.
-run_type: formal
-model: ../models/pretrained/yolov8s.pt
+# 统一正式训练配置：所有路径相对此文件；训练期间不使用测试集。
+# models 中选择 yolov8s 或 yolov11s，其值为对应的 COCO 预训练权重。
+models:
+  yolov8s: ../models/pretrained/yolov8s.pt
+  yolov11s: ../models/pretrained/yolo11s.pt
 data: ../datasets/processed/crack_detection/data.yaml
 project: ../outputs/training
-name: yolov8s_formal
+trained_models: ../models/trained
 
+# 以下为原生 Ultralytics train 参数，两个正式模型共用同一组设置。
 training:
   epochs: 150
   fraction: 1.0

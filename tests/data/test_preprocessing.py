@@ -8,14 +8,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src.Preprocessor import (
+from src.data.dataset_io import export_dataset, validate_dataset
+from src.data.preprocessor import (
     Preprocessor,
     assign_splits,
     decode_mask,
     infer_provenance,
     mask_to_boxes,
 )
-from src.dataset_io import export_dataset, validate_dataset
 
 
 def array_hash(array: np.ndarray, width: int, height: int) -> str:

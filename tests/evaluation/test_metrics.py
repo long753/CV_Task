@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.detection_evaluation import evaluate_predictions
+from src.evaluation.metrics import evaluate_predictions
 
 
 def write_ground_truth(

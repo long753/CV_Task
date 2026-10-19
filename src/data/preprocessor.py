@@ -589,7 +589,7 @@ class Preprocessor:
                         handle.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
                 self.report["status"] = "audit_complete"
             else:
-                from src.dataset_io import export_dataset, render_previews, validate_dataset
+                from src.data.dataset_io import export_dataset, render_previews, validate_dataset
                 export_dataset(records, staging)
                 self.report["validation"] = validate_dataset(staging)
                 self.report["previews"] = render_previews(records, staging, self.config["seed"], self.config["previews_per_source"])

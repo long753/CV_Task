@@ -1,166 +1,222 @@
 # 裂缝目标检测多架构对比
 
-当前实现数据预处理，以及 YOLOv8s 的短训练、权重重载、验证集推理与统一 COCO 评测闭环。
-这还不是五模型正式对比实验；当前 YOLOv8s 只训练了两个 epoch，用于验证流程。
+已完成数据预处理，以及历史 YOLOv8s 的 150 轮正式训练、冻结权重选择和测试集评测。
+目前只有这一项正式模型结果，不是五模型架构优劣结论。代码不导入或调用 `tutorial/` 的函数，原始数据不修改、不删除。
 
-代码独立实现，不导入或调用 `tutorial/` 中的任何模块或函数。原始数据不修改、不删除。
+## 环境与目录
 
-## 环境与运行
-
-所有检查、预处理、训练及评测均使用用户确认的 Conda 环境 `cv_task`，不使用系统 Python。
-经用户授权新增了 26 个训练相关包，原有 125 个包的版本全部保持不变；
-版本审计保存在 `outputs/training_environment.json`。`requirements.txt` 声明预处理依赖，
-`requirements-training.txt` 记录训练的直接依赖；脚本不自动安装或升级包。
-
-以下命令在项目根目录执行：
-
-```bash
-# 完整预处理：输出目录必须尚不存在
-conda run -n cv_task python -s -B script/prepare_dataset.py
-
-# 仅审计、生成分组清单和 manifest；不复制图片、不导出训练标签
-conda run -n cv_task python -s -B script/prepare_dataset.py \
-  --stage audit --output datasets/processed/crack_audit
-
-# 对已有输出独立验证；不需要原始数据，也不读取预处理配置
-conda run -n cv_task python -s -B script/prepare_dataset.py \
-  --stage validate --output datasets/processed/crack_detection
-
-# 回归测试；只使用临时合成样本，不依赖原始数据
-conda run -n cv_task python -s -B -m unittest discover -s tests -v
-```
-
-默认配置为 `configs/preprocess.yaml`。配置中的路径相对于配置文件解析；
-命令行 `--output` 相对于当前工作目录解析。若需重新生成，使用新的 `--output`；
-程序拒绝覆盖已有目录，包括已有审计目录，不自动删除旧结果。
-
-## 命令行参数与输出字段
-
-命令行参数是输入，终端 JSON 是处理结果统计，两者不是一回事。
-
-| 输入参数 | 含义 |
-|---|---|
-| `--config` | YAML 配置文件，默认 `configs/preprocess.yaml`；`validate` 不使用它 |
-| `--stage audit` | 审计、掩码转框、分组划分并保存 manifest，不导出图片/训练标签/检查图 |
-| `--stage all` | 默认模式；审计、转换、划分、导出、校验及生成检查图 |
-| `--stage validate` | 独立检查已有导出，不重新生成数据；必须指定 `--output` |
-| `--output` | `audit/all` 时覆盖配置中的输出目录；`validate` 时指定待检查目录 |
-
-`audit/all` 的终端摘要：
-
-| 字段 | 含义 |
-|---|---|
-| `status` | `audit_complete` 表示审计完成；`complete` 表示完整导出完成 |
-| `runtime` | 实际 Python 解释器路径、Python 与 OpenCV/NumPy/Pillow/PyYAML 版本，不是训练参数 |
-| `total_pairs` | 成功读取的图像—掩码对数量，包括最终未导出的样本 |
-| `splits` | `train/val/test` 各集合的统计，见下文 |
-| `exclusions` | 未导出原因及数量：`quarantined` 为人工确认隔离，`augmentation_in_heldout_group` 为验证/测试组增强成员；有完全重复样本时还可能出现 `exact_duplicate_of` |
-| `output_dir` | 本次输出根目录 |
-| `audit_report` | 详细审计报告文件路径，含警告、编码与尺寸统计等 |
-| `previews` | 检查图数量，不是训练图片数量；`audit` 模式为零 |
-
-每个 `splits.<集合>` 中：`images` 是导出图片数，`groups` 是原图来源分组数，
-`instances` 是检测框总数，`empty_images` 是没有检测框的图片数，
-`sources` 是该集合按来源子集统计的图片数。一张图片可有多个框，因此图片数不等于实例数。
-
-`validate` 直接显示完整验证统计：
-
-- `records`：manifest 总记录数；`active_records`：实际导出数；`excluded_records`：未导出数。
-- `annotations`：全部检测框数；`empty_records`：导出图片中无框的图片数。
-- `splits.<集合>.records/images/labels`：该集合记录、图片、标签文件数；一个 TXT 可包含多个框。
-  `annotations` 是框数，`empty_records` 是无框图片数。
-- `sources`：全部导出图片按来源子集统计的数量。
-
-### 简化后的入口职责
-
-`parse_args(argv)` 只读取命令行并检查参数组合；`load_config(...)` 已在
-`src/Preprocessor.py` 中负责 YAML 读取和配置校验；`summarize_report(...)` 只整理展示字段；
-`main(argv)` 只选择处理流程并打印一次结果。
-
-入口不再统一捕获 `ValueError/OSError`：开发阶段直接保留错误堆栈，便于定位实际失败位置。
-命令行参数错误仍由 argparse 显示 usage 并返回退出码 `2`。
-标注合法性、分组泄漏、防覆盖及临时目录发布等底层检查保留，避免静默生成错误数据。
-
-## 程序结构
-
-- `src/Preprocessor.py`：配置校验、文件配对与掩码审计、框提取、来源分组、去重及集合划分。
-- `src/dataset_io.py`：YOLO/COCO 导出、磁盘结果独立验证和检查图绘制。
-- `script/prepare_dataset.py`：命令行入口。
-- `configs/preprocess.yaml`：预处理参数及经用户确认的异常样本隔离清单。
-- `tests/test_preprocessing.py`：编码、边界、分组泄漏、隔离策略和格式往返回归测试。
-- `script/train_yolo.py`：简单函数式训练入口、独立可写数据副本、权重重载、验证集推理与展示。
-- `configs/train_yolov8s.yaml`：两轮 YOLOv8s pilot 的模型、路径、训练和评测参数。
-- `src/detection_evaluation.py`：可供后续不同模型共用的 COCO AP 和固定阈值 P/R 评测。
-- `tests/test_detection_evaluation.py`、`tests/test_yolo_inference.py`：指标匹配和逐张推理批量边界回归。
-
-## 数据与标注规则
-
-输入为 `datasets/CrackDataset/`，包含 `crack500`、`AsphaltCrack300` 和 `CFD`。
-原仓库含道路裂缝；不能据此直接声称已经验证建筑墙面的领域泛化。
-
-1. 同名图像与掩码严格配对。缺失、重名、无法解码、尺寸不一致或未知编码均报告错误，
-   不通过模糊匹配或自动缩放修补标注。
-2. 读取原始像素，不执行 EXIF 自动旋转。图像保留原分辨率；不生成增强副本，不新增切片。
-3. 单通道/1-bit 掩码按配置的数值解析。`P` 模式掩码按配置的前景白色、背景黑色解析
-   **每张图自己的调色板**，并在 manifest 保存实际前景索引与调色板映射。
-   实际数据中 AsphaltCrack300 的白色为索引 `0`，CFD 附加图的白色为索引 `1`，
-   不能统一按索引大于零提取前景。
-4. 每个八邻域连通域生成一个半开区间框 `[x_min, y_min, x_max, y_max]`。
-   默认 `min_component_area=1`、`closing_iterations=0`，保留所有已标注连通域；
-   面积阈值单位是前景像素数，不是框面积。参数只依据训练数据确定，之后冻结。
-5. 相交裂缝可能合成一个连通域，断裂裂缝可能产生多个框；这些是掩码派生标注，
-   不是人工实例级真值。合法空掩码保留为空目标图像。
-
-### 分组划分与异常处理
-
-- Crack500 去掉文件名最后两个数字坐标字段作为原图 ID。
-- AsphaltCrack300 以切片编号前的三位数字作为原图 ID。
-- CFD 将三位数字原图与 `_N`、`__N`、`addN`、`adjustN`、`subN` 派生样本归为同组。
-- 未识别命名必须提供明确的 `group_overrides`，或显式隔离；不假设每张图片独立。
-- 不沿用输入目录的 train/val 划分：审计发现其中有 107 个原图组交叉。
-  按来源分层、以原图组为单位，用固定种子 `42` 划分约 `70%/10%/20%`。
-  整组不可拆分，图片数量不保证恰好满足该比例。
-- 解码后的 RGB 完全重复时先合并来源组，防止重复桥接导致泄漏。
-  相同图像但掩码冲突会失败，除非相关记录已明确隔离。
-- 已知 CFD 离线增强仅保留在训练组；验证/测试组的增强成员不导出，但保留在 manifest。
-- pHash 只报告跨集合相似候选，不把相似度误当作已证实的同源关系。
-  当前阈值为汉明距离不超过 `4`；它不是不存在所有近重复或相邻拍摄场景的证明。
-
-用户已确认隔离 32 个样本：AsphaltCrack300 中 `001/002` 的 14 对相同图像、不同掩码
-记录，以及 CFD 的 `img1`–`img4` 来源不明附加图。隔离仅影响导出，原始文件和原因记录均保留。
-
-## 输出
+所有预处理、训练、评测和检查均使用 `cv_task` Conda 环境中的解释器：
 
 ```text
-datasets/processed/crack_detection/
-├── images/{train,val,test}/             # 原图字节副本，两个格式共用
-├── labels/{train,val,test}/             # YOLO TXT；空目标为空文件
-├── annotations/instances_{split}.json   # COCO JSON
-├── splits/{train,val,test}.txt          # sample_id 清单
-├── manifest.jsonl                      # 全量记录，包括所有未导出样本
-├── data.yaml                           # YOLO/RT-DETR 数据配置
-├── preprocess_state.json               # 完成状态
-└── audit/
-    ├── config.json                     # 实际生效配置与解析后的路径
-    ├── report.json                     # 审计、统计、划分及验证结果
-    └── previews/                       # 18 张检查图
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B
 ```
 
-YOLO 类别为 `0`；COCO 类别为 `1`。COCO 的框为像素 `xywh`，`area` 为框面积，
-`file_name` 相对于输出的 `images/`。YOLO 的中心与宽高归一化到 `[0,1]`。
-`data.yaml` 不写固定的 `path`，图片路径相对于其所在目录，便于移动整套数据。
-Manifest 中的原始来源路径保留绝对路径用于追溯；已有导出数据的独立校验不要求这些来源路径仍存在。
+不使用系统 Python。项目仅保留一份 `requirements.txt`，覆盖预处理、训练、评测和 TensorBoard；代码不自动安装或升级包。
+历史环境快照中的主要版本为 PyTorch `2.8.0+cu128`、torchvision `0.23.0+cu128`、Ultralytics `8.3.221`、pycocotools `2.0.10`、TensorBoard `2.21.0`；历史正式运行的环境审计记录保留在其 `audit/` 中。
 
-每张检查图包含原图、掩码叠加与派生框、重新读取的 YOLO 框、重新读取的 COCO 框。
-预览路径相对于输出目录，避免发布临时目录后路径失效。
+### 服务器环境安装
 
-程序先写入同级临时目录。审计失败会保留 `audit/report.json` 并返回非零退出码；
-完整导出只有通过独立验证与检查图生成后才发布为 `complete`。
+统一依赖面向 Linux x86_64、Python 3.12 和 NVIDIA GPU，沿用当前 PyTorch CUDA 12.8 基线。
+先用 `nvidia-smi` 检查服务器 GPU 与驱动；驱动需要兼容所选 CUDA wheel。
+PyTorch wheel 自带 CUDA 运行库，不要求另外安装同版本的系统 CUDA Toolkit。
 
-## 已验证结果
+```bash
+conda create -n cv_task python=3.12 -y
+conda activate cv_task
+python -m pip install -r requirements.txt
+python -m pip check
+python -c "import torch; print(torch.__version__, torch.version.cuda); print('CUDA 可用:', torch.cuda.is_available())"
+```
 
-实际处理 3403 对文件；隔离 32 个异常样本，另有 180 个验证/测试组的增强样本未导出。
-最终导出 3191 张图像、6767 个检测框：
+需要代理时，在安装前配置服务器可用的代理；只有服务器也配置了 `proxy_on` 命令时才直接执行它，
+不要把本机的 `127.0.0.1` 代理地址直接当作服务器上的代理。
+本机 OpenCV 来自 Conda，版本号为 `5.0.0`；统一文件使用 PyPI 对应的 `opencv-python==5.0.0.93` wheel，
+不同时安装另一份 `opencv-python-headless`。Ubuntu/Debian 精简镜像若缺少 `libGL.so.1` 或 GLib，
+需由服务器管理员安装 `libgl1`、`libglib2.0-0` 系统运行库。
+这里只锁定项目直接依赖，完整历史环境快照仍保存在正式实验的 `audit/`，不把本机所有包搬到服务器。
+
+```text
+script/                       # 中文调用说明与命令行入口
+├── prepare_dataset.py
+├── train_ultralytics.py      # YOLOv8s / YOLO11s 共用训练入口和训练逻辑
+└── evaluate.py               # 冻结权重的统一评测入口
+configs/
+├── preprocess.yaml
+└── train_ultralytics.yaml    # 两个 YOLO 模型共用的正式训练配置
+src/
+├── config.py                 # 实验配置读取及路径解析
+├── data/
+│   ├── preprocessor.py       # 掩码审计、框提取、分组与划分
+│   └── dataset_io.py         # YOLO/COCO 导出及独立校验
+└── evaluation/
+    ├── metrics.py            # 模型无关的 COCO AP 和固定阈值 P/R
+    ├── yolo.py               # YOLO 推理、指标、可视化的共用流程
+    └── benchmark.py          # YOLO 参数量、计算量与端到端时延
+tests/                        # 保留全部既有行为回归，按职责分类
+├── data/test_preprocessing.py
+└── evaluation/
+    ├── test_metrics.py
+    └── test_yolo.py
+models/
+├── pretrained/               # 训练前的预训练权重
+└── trained/yolov8s_formal/   # 历史 YOLOv8s 正式模型，含 best/last/epoch*.pt
+outputs/training/yolov8s_formal/
+├── validation/               # 历史统一验证结果
+├── test/                     # 历史冻结测试结果
+├── plots/                    # 历史 Loss、原生 PR、混淆矩阵、batch 预览
+├── tensorboard/              # 历史 TensorBoard 事件
+├── logs/                     # 历史 train.log、test.log、tensorboard.log
+├── audit/                    # 历史冻结协议、依赖/输入快照、目录迁移记录
+├── results.csv
+├── training_state.json       # 仅历史运行元数据
+├── experiment_summary.json
+├── args.yaml
+├── source_config.yaml        # 仅历史运行配置副本
+└── resolved_config.yaml      # 仅历史解析配置副本
+```
+
+当前训练逻辑只位于 `script/train_ultralytics.py`；不存在活动的模型专用训练入口或 `src.training` 用法。
+训练后的统一验证和独立评测均调用 `src.evaluation.yolo.evaluate_checkpoint`。其他架构需要自己的加载、预处理和推理适配，转换为标准 COCO 预测后，可复用 `src.evaluation.metrics.evaluate_predictions`。
+
+`configs/train_ultralytics.yaml` 顶层的 `models` 映射维护 `yolov8s`、`yolov11s` 到各自预训练权重的相对路径；`data`、`project`、`trained_models` 也在顶层。配置路径相对于 YAML 文件解析，读取后这些路径为绝对路径；命令行文件路径相对于当前工作目录解析。`training`、`evaluation`、`benchmark` 三段保留正式基线的训练、统一评测和性能测量设置。配置不再包含或要求 `run_type`、单一 `model`、`name`。
+
+新运行的目录由 `project/<实际运行名>/` 决定，模型归档根目录由 `trained_models/<实际运行名>/` 决定。运行目录包含如下当前产物：
+
+```text
+outputs/training/<实际运行名>/
+├── data_view/                # 仅本次训练复制的 train/ 与 val/；不复制 test/
+├── validation/               # 训练完成后的统一验证
+├── plots/                    # 训练图片、原生图表等图片产物
+├── tensorboard/              # 原生 Ultralytics TensorBoard 事件
+├── args.yaml                 # 原生 Ultralytics 参数记录
+├── results.csv               # 原生 Ultralytics 训练记录
+├── config.yaml               # 含 model_name、name 基名和轮数覆盖值的解析配置
+└── experiment_summary.json   # 简洁引用模型、运行目录、checkpoint、指标和验证结果
+models/trained/<实际运行名>/
+└── best.pt、last.pt、epoch*.pt 等整个原生 weights/ 目录内容
+```
+
+完成时整个原生 `weights/` 归档到 `trained_models/<实际运行名>/`，图片归入 `plots/`，原生事件归入 `tensorboard/`。`experiment_summary.json` 记录模型、实际运行目录、最佳及最后 checkpoint、训练轮数、指标和验证摘要路径。`config.yaml` 中的 `name` 是运行名基名，实际递增名称见 `args.yaml` 和摘要中的 `run_dir`。新运行不生成自定义 `training_state.json`、`source_config.yaml` 或 `resolved_config.yaml`，也不通过 CSV 回读训练进度或维护自定义最佳 checkpoint 事件状态。
+
+## 常用命令
+
+以下命令在项目根目录执行。
+
+```bash
+# 对现有冻结数据进行独立校验，不重新生成数据
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py \
+  --stage validate --output datasets/processed/crack_detection
+
+# 仅审计：目标目录须尚不存在
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py \
+  --stage audit --output datasets/processed/crack_audit
+
+# 完整预处理：输出目录须尚不存在
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py
+
+# 使用默认配置启动新的 YOLOv8s 正式训练
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py
+
+# 使用同一配置启动新的 YOLO11s 正式训练
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
+  --model yolov11s
+
+# 新训练时以命令行覆盖 YAML 中的轮数
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
+  --model yolov8s --epochs 150
+
+# 只恢复一个未完成运行保留的原生 checkpoint；不能附加其他训练参数
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
+  --resume outputs/training/<未完成实际运行名>/weights/last.pt
+
+# 使用冻结权重独立评测验证集，另写新目录，不覆盖正式结果
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/evaluate.py \
+  --config configs/train_ultralytics.yaml \
+  --weights models/trained/yolov8s_formal/best.pt \
+  --split val --output outputs/evaluation/yolov8s_val
+
+# 递归发现全部行为回归
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B -m unittest discover -s tests -v
+
+# 查看某个运行的原生训练曲线；不需要安装 TensorFlow
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B -m tensorboard.main \
+  --logdir outputs/training/<实际运行名> \
+  --host 127.0.0.1 --port 6006 --load_fast=false
+```
+
+`train_ultralytics.py --config` 默认 `configs/train_ultralytics.yaml`。`--model` 只能是 `yolov8s` 或 `yolov11s`，默认 `yolov8s`；`--epochs` 只在新训练时覆盖 YAML 的 `training.epochs`。新运行名以 `<model>_formal` 为基础，由 Ultralytics 自动递增以避免覆盖已有运行；没有 `--name` 参数。
+
+`--resume <checkpoint>` 必须单独使用，并直接执行原生 `YOLO(checkpoint).train(resume=True)`。它只能恢复仍未完成、其 `weights/` 尚在运行目录中的 checkpoint；完成运行的模型已经归档，不能继续训练。归档拒绝覆盖同名模型目录。
+
+评测入口为 `script/evaluate.py`：`--weights`、`--output` 必填，`--split` 只能是 `val` 或 `test`（默认 `val`），`--benchmark` 可额外测量固定代表性验证样本上的性能。`validate` 不读取原始数据或预处理配置，必须指定 `--output`；预处理拒绝覆盖已有目标目录。
+
+TensorBoard 地址为 <http://127.0.0.1:6006>。训练期间原生事件写在运行目录根层，结束后移入 `tensorboard/`；将 `--logdir` 指向运行目录即可递归发现事件。SCALARS 中可用 `(train|val)/.*loss` 过滤 Loss。历史 `yolov8s_formal` 事件的前 40 轮曾从真实 CSV 补录，后续由原生回调记录；补录事件的 wall time 是导入时间，因此查看这份历史完整曲线应使用 **STEP** 横轴。该历史事件不被重新生成或改写。
+
+## YOLO11s 训练入口与历史流程验证
+
+YOLO11s 使用统一入口，而不是独立脚本：
+
+```bash
+/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
+  --config configs/train_ultralytics.yaml --model yolov11s
+```
+
+该模型在共用 YAML 的 `models.yolov11s` 中选择预训练权重。除模型权重和自动生成的运行名外，正式训练、验证及性能测量配置与 YOLOv8s 正式基线一致：150 轮、640×640、batch 2、AMP、AdamW、种子 42，使用同一冻结数据划分，不用测试集选权重。
+
+官方权重名为 **`yolo11s.pt`**，没有 `v`。历史下载前已在终端执行 `proxy_on`，再从
+[Ultralytics 官方发布地址](https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt)
+下载到 `models/pretrained/yolo11s.pt`，未安装或升级依赖。已实际加载并确认是 s 规格、COCO 80 类、包含 C3k2/C2PSA 的 YOLO11 架构；本地文件 SHA-256 为 `85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5`。
+
+统一入口已完成本轮小样本验证，尚未启动新的正式 150 轮实验。以下仍为切换入口前的历史记录，不能作为模型正式精度或架构优劣结论：当时在 `cv_task` 环境中用 5% 训练数据（117 张）实际训练了 2 轮，并核对：
+
+- AMP 与 GradScaler 正常启用，训练/验证 Loss 有限，骨干卷积参数确实更新。
+- 4 个检查点完成历史归档，原生 TensorBoard 有第 1、2 轮记录，曲线和预测图已查看。
+- 保存的最佳模型能够重载为单类 crack；274 张验证图的独立评测与训练后验证一致。
+- 原 YOLOv8s 的 274 张验证图指标保持一致，既有正式结果和模型未改写。
+- 当时的 21 项原有回归测试通过，现有 158 个包的版本未改变。
+
+该历史小测试使用 `/tmp` 中的临时配置、数据副本、日志和权重，验证后已全部删除，没有向项目 `tests/` 新增测试文件，也没有在正式 `outputs/` 或 `models/trained/` 留下小测试模型。
+
+### 本轮统一入口验证
+
+全部检查在 `cv_task` 环境完成，没有新增永久测试文件或安装、升级依赖：
+
+- 同一临时数据集含 24 张训练图、12 张验证图，分别通过 `--model yolov8s` 和 `--model yolov11s` 真实训练 2 轮。
+- 两个模型均有真实骨干权重更新、有限 Loss，AMP 自检通过，原生检查点中的 GradScaler 状态有效。
+- 每个模型的原生 4 个检查点完成归档，TensorBoard 有第 1、2 轮 Loss 记录，生成的曲线已查看；保存权重重载后的统一验证指标一致。
+- 额外模拟第 1 轮保存后中断，再单独执行 `--resume`，成功完成第 2 轮并保留连续日志和 TensorBoard 步数。
+- 使用新公共配置重评原正式模型的完整 274 张验证图，指标与既有结果一致；21 项原有回归测试通过。
+- 6481 个受保护文件（既有正式模型、实验结果、预训练权重和冻结数据）内容未变，158 个环境包版本未变。
+
+临时配置、数据副本、训练模型、日志、验证脚本和 AMP 辅助权重均已随 `/tmp` 测试目录删除。
+上述仅验证统一入口的训练、续训和评测流程，不代表完整训练后的精度比较。
+用户保留的 `configs/train_yolov8s_formal copy.yaml` 仅是备份，当前程序和命令不引用它。
+
+Ultralytics 首次执行 AMP 自检时可能下载 `yolo11n.pt`，这是框架的辅助检查模型，不会改变
+`--model` 选中的训练模型。如果需要下载，先在同一终端执行 `proxy_on`；本轮测试也按此执行。
+
+## 数据与预处理
+
+输入为 `datasets/CrackDataset/`，含 `crack500`、`AsphaltCrack300`、`CFD`。
+这些数据包含道路裂缝，不能直接声称已验证建筑墙面的泛化能力。
+
+1. 严格配对同名图像与掩码；缺失、重名、无法解码、尺寸不同、未知编码均报错，不模糊匹配或缩放修补标注。
+2. 读取原始像素，不自动执行 EXIF 旋转，保留原分辨率，不生成增强副本或新增切片。
+3. 单通道/1-bit 按配置解析；`P` 模式按每张图自己的调色板白色前景、黑色背景解析，并记录映射。
+   AsphaltCrack300 的白色实际为索引 0，CFD 附加图为索引 1，不能统一用索引大于零识别前景。
+4. 八邻域连通域生成半开区间框。冻结设置为 `min_component_area=1`、`closing_iterations=0`；面积阈值是前景像素数，不是 bbox 面积。
+5. 相交裂缝可能合并，断裂裂缝可能产生多个框；这是掩码派生标注，不是人工实例级真值。合法空掩码保留为空目标图像。
+
+### 防泄漏划分
+
+- Crack500 去掉文件名最后两个坐标字段作为原图 ID；AsphaltCrack300 按切片编号前的三位原图编号分组。
+- CFD 原图与 `_N`、`__N`、`addN`、`adjustN`、`subN` 派生样本归同组；未知命名须明确覆盖或隔离。
+- 原输入目录存在 107 个交叉原图组，因此重新按来源分层、原图分组，用种子 42 划分约 70%/10%/20%，不拆组。
+- RGB 完全重复的图像合并来源组，防止重复桥接；相同图像却掩码冲突的样本必须明确隔离。
+- 已知 CFD 离线增强仅保留在训练组，验证/测试组增强不导出；pHash 距离不超过 4 仅报告相似候选，不证明同源或不存在全部近重复。
+- 用户确认隔离 32 个样本：AsphaltCrack300 `001/002` 的 14 对相同图像、不同掩码记录，以及 CFD `img1`–`img4` 来源不明附加图。
+
+实际处理 3403 对文件，隔离 32 个异常样本，另有 180 个验证/测试组增强样本不导出；原始文件未删除。
 
 | 集合 | 图像 | 原图分组 | 检测框 |
 |---|---:|---:|---:|
@@ -168,298 +224,129 @@ Manifest 中的原始来源路径保留绝对路径用于追溯；已有导出�
 | val | 274 | 47 | 518 |
 | test | 575 | 94 | 1214 |
 
-预处理的 13 项回归测试通过，包括调色板反向编码、共享框边界的浮点往返误差、
-相同图像标签冲突、重复桥接、分组泄漏与隔离样本保留。
-真实数据完整导出通过独立验证；已人工查看三个来源的检查图。
-
-检测框来自裂缝掩码，不代表裂缝实例标注已人工全面审核；在正式训练前，应继续审阅检查图及目标尺度统计。
-
-## YOLOv8s 短训练与验证
-
-### 运行方式
-
-训练依赖已安装到 `cv_task`：PyTorch `2.8.0+cu128`、torchvision `0.23.0+cu128`、
-Ultralytics `8.3.221`、pycocotools `2.0.10`。GPU 卷积和 CUDA NMS 已实际验证。
-需要下载权重时，可先在交互式终端执行用户已有的 `proxy_on`；代码不硬编码代理地址。
-
-```bash
-# 默认加载 COCO 预训练 yolov8s.pt，在 CUDA:0 训练两轮，再对验证集推理与评测
-conda run -n cv_task python -s -B script/train_yolo.py
-
-# 可选覆盖：是一次新的训练，不是从旧权重续训
-conda run -n cv_task python -s -B script/train_yolo.py \
-  --config configs/train_yolov8s.yaml --epochs 3 --name yolov8s_pilot_3ep
-```
-
-入口分为参数解析、配置读取、训练、预测、评测、可视化和摘要整理几个普通函数，
-没有另建通用 Trainer 类。配置路径仍相对于 YAML 文件解析。
-默认设置为 `640×640`、物理 batch `2`、AMP、AdamW、学习率 `0.001`、种子 `42`。
-仅使用轻度亮度变化和水平翻转，不使用 Mosaic。完整实际设置以运行目录的 `args.yaml` 为准。
-重名运行由 Ultralytics 创建带编号的新目录，不覆盖旧结果。
-
-### 数据隔离与推理规则
-
-- 训练前只把 train/val 图片和标签按原字节复制到 `outputs/yolov8s-data-*/`。
-  这是可写训练副本，不是重新标注、缩放或新增增强数据。
-- Ultralytics 即使设置 `cache=False` 也会写标签缓存，因此不直接训练处理好的原目录。
-  已验证原 train/val 图片、标签和相关配置共 5235 个文件的 SHA-256 均未改变。
-- 不复制、不推理、不评测真实测试集。模型选择、当前指标和示例图均来自验证集。
-- 训练结束后重新实例化 `YOLO(best.pt)`，检查其类别为 `0=crack`。
-- 当前版本把 Python 图片路径列表视为一个内存 batch；目录输入才按 `batch=1` 流式读取。
-  这里使用验证集目录，实际观察到 274 个 batch，每个恰好一张图，并保留 CPU 回归测试防止再次出现该问题。
-- 预测使用固定方形 `640×640` 输入、`rect=False`，输出框已映射回原图坐标。
-  Ultralytics 的 `boxes.xywh` 是中心坐标，不能直接当 COCO 左上角坐标；
-  本实现从 `xyxy` 转换为 COCO 的 `[x_min,y_min,width,height]`。
-
-### 统一评测口径
-
-`src/detection_evaluation.py` 不依赖具体模型，接收标准 COCO 预测结果。
-
-- AP：COCO bbox，IoU 为 `0.50:0.05:0.95`，每图最多 100 个检测结果。
-- 预测保留分数下限 `0.001`，不先用 P/R 的阈值截断 AP 输入。
-- P/R：置信度不低于 `0.25`、IoU 不低于 `0.50`，按分数排序、一对一匹配；
-  重复检出计 FP，未匹配真值计 FN。
-- 当前 GT 为非 crowd、非 ignore 的单类裂缝框；不支持的 crowd/ignore 标注会明确报错。
-- JSON 指标范围是 `0..1`；下表换算为百分比。
-
-框架内置 `results.csv` 和 `BoxPR_curve.png` 用于观察训练过程，
-不要与此统一评测的 `validation/metrics.json` 混在同一比较表中。
-不同输入处理和统计口径可能得到不同数值；正式多模型比较应统一使用后者。
-
-### 本次真实运行与结果
-
-运行目录：`outputs/training/yolov8s_pilot/`。
-两个 epoch 已真实完成，检查到 backbone 参数更新、权重能够重新加载，统一指标可从保存的预测重复计算。
-
-| 验证集指标 | 两轮 pilot 结果 |
-|---|---:|
-| Precision | 23.78% |
-| Recall | 7.53% |
-| mAP@0.5 | 7.86% |
-| mAP@0.5:0.95 | 3.07% |
-
-当前仍有明显漏检，不能作为收敛性能或架构优劣结论。
-本次初始训练已完成，但后续路径列表推理触发大 batch 显存不足；
-修正为目录流式推理后，复用已保存的 `best.pt` 完成评测，没有重新训练。
-原执行日志保留为 `training_console.log`，恢复情况记录在 `pilot_summary.json`。
-AMP 检查通过的证据来自原训练日志，不虚构已结束进程的 GradScaler 状态。
+冻结导出在 `datasets/processed/crack_detection/`：
 
 ```text
-outputs/training/yolov8s_pilot/
-├── args.yaml / source_config.yaml / resolved_pilot_config.yaml
-├── results.csv / results.png            # 每轮指标和 Loss 曲线
-├── weights/{best,last}.pt               # 真实训练权重
-├── training_console.log                # 原训练及首次推理报错日志
-├── pilot_summary.json                  # 运行环境、路径与最终统一评测
-└── validation/
-    ├── predictions_coco.json
-    ├── metrics.json / pr_curve.png
-    └── previews/                       # 三个来源各两张，GT 绿框、预测橙框
+images/{train,val,test}/             # 原图字节副本
+labels/{train,val,test}/             # YOLO TXT，空目标为空文件
+annotations/instances_{split}.json   # COCO
+splits/{train,val,test}.txt          # sample_id 清单
+manifest.jsonl                      # 包括未导出记录
+data.yaml                           # 数据配置
+preprocess_state.json               # 完成状态
+audit/{config.json,report.json,previews/}
 ```
 
-完整 20 项回归测试通过；已查看实际 Loss 曲线、统一 PR 曲线及三个来源的预测图。
+YOLO 类别是 0，中心与宽高归一化；COCO 类别是 1，bbox 为原图像素 `[x_min,y_min,width,height]`，area 为框面积。
+COCO `file_name` 相对于 `images/`，数据 YAML 不固定绝对根路径。Manifest 的原始来源绝对路径只用于追溯。
+独立校验不依赖原始来源仍可访问，检查图包含原图、掩码/派生框、重新读取的 YOLO 框及 COCO 框。
 
-## YOLOv8s 正式实验
+完整导出先写同级临时目录，通过独立校验和检查图生成后才发布；失败保留审计报告。
 
-### 固定协议与执行顺序
+### 预处理输出字段
 
-正式配置为 `configs/train_yolov8s_formal.yaml`，与两轮 pilot 分开保存：
-从原始 COCO 预训练 `models/pretrained/yolov8s.pt` 开始，使用完整训练集训练 150 轮，
-`640×640`、物理 batch `2`、AMP、AdamW、`lr0=0.001`、余弦学习率、种子 `42`。
-`nbs=16` 控制框架的名义累计 batch，warmup 期间累计步数会变化，不能理解为每一步都严格等效于 batch 16。
-关闭早停（`patience=0`），不因测试集表现改变训练预算。
+| 摘要字段 | 含义 |
+|---|---|
+| `status` | `audit_complete` 为审计完成，`complete` 为完整导出完成 |
+| `runtime` | 实际解释器与图像处理依赖版本，不是训练参数 |
+| `total_pairs` | 已读取图像—掩码对数，包括未导出样本 |
+| `splits` | 各集合的 images、groups、instances、empty_images、sources |
+| `exclusions` | 隔离、验证/测试组增强、完全重复等未导出原因 |
+| `output_dir`、`audit_report`、`previews` | 输出位置、审计报告、检查图数量；检查图数量不是训练图片数 |
 
-```bash
-conda run -n cv_task python -s -B script/train_yolo.py \
-  --config configs/train_yolov8s_formal.yaml
+`validate` 的 `records/active_records/excluded_records` 分别为全部/导出/未导出记录数，
+`annotations` 为框数，`empty_records` 为无框记录；各集合的 records/images/labels 分别统计记录、图片、标签文件。
+一张图或一个标签文件可以包含多个框。
 
-# 仅在训练中断后使用：恢复原生 optimizer、AMP scaler 和调度 epoch
-conda run -n cv_task python -s -B script/train_yolo.py \
-  --resume outputs/training/yolov8s_formal/weights/last.pt
-```
+## 正式训练与评测协议
 
-`--resume` 使用该运行保存的配置和原来的 train/val 数据副本，
-不能与 `--config`、`--epochs` 或 `--name` 混用，也不会新建一次从头训练。
-只接受与现有日志一致的最新未完成 checkpoint，不支持回退到较早的周期 checkpoint。
-训练完成后框架会剥离 `best.pt`/`last.pt` 的 optimizer，不能再当作未完成断点续训。
-原生恢复不保证随机数状态及数据顺序与从不中断的训练逐位一致。
+历史 YOLOv8s 正式实验从 `models/pretrained/yolov8s.pt` 的 COCO 预训练开始，训练 150 轮：
+640×640、物理 batch 2、AMP、AdamW、初始学习率 0.001、余弦学习率、种子 42。
+`nbs=16` 控制框架累计 batch，warmup 时累计步数变化，不能理解为每一步严格等效于 batch 16。
+关闭早停，仅轻度亮度变化和水平翻转，不使用 Mosaic。当前共用 YAML 在 `training`、`evaluation`、`benchmark` 中保留同一正式协议；每次新运行还会保存其解析后的 `config.yaml`。
 
-权重选择仅依赖固定版本 Ultralytics 的验证集 mAP@0.5:0.95；相同 fitness 时保留最新一次权重。
-`training_state.json` 记录实际保存事件对应的最佳 epoch，而不是从四舍五入的 CSV 反推。
-训练结束后的原生最佳权重复验、每轮原生指标和统一 COCO 指标是不同记录，不能混为一谈。
-正式训练完成并审阅验证结果、冻结权重后，才执行测试：
+训练不直接使用冻结数据目录：Ultralytics 即使 `cache=False` 也会写缓存，因此新运行先复制 train/val 到运行内 `data_view/`，不复制测试集。
+路径列表会被固定版本合成大 batch，故推理使用目录、`stream=True`、`batch=1`、`rect=False`。
+从原图 `xyxy` 转 COCO 左上角 `xywh`，不误用 Ultralytics 的中心坐标 `boxes.xywh`。
 
-```bash
-conda run -n cv_task python -s -B script/evaluate_yolo.py \
-  --config configs/train_yolov8s_formal.yaml \
-  --weights outputs/training/yolov8s_formal/weights/best.pt \
-  --split test --output outputs/training/yolov8s_formal/test --benchmark
-```
+- 历史 YOLOv8s 的最佳权重按原生验证集 mAP@0.5:0.95 选取，同 fitness 时采用最新保存事件；未从低精度 CSV 反推最佳 epoch。新运行直接采用原生 Ultralytics 的最佳 checkpoint，不维护自定义事件状态。
+- AP 使用 COCO bbox、IoU 0.50:0.05:0.95、分数下限 0.001、每图最多 100 框，NMS IoU 0.70。
+- P/R 使用置信度 0.25、匹配 IoU 0.50，按分数一对一匹配；重复检出为 FP，未匹配 GT 为 FN。
+- 裁剪回原图后只剔除宽或高不大于零的空框，记录数量，保留所有正面积小框。指标层仍拒绝无效框。
+- 冻结评测 GT 为非 crowd、非 ignore 的单类裂缝框，不支持的 crowd/ignore 会报错。
+- 框架原生训练曲线与统一评测口径不同，不在同一对比表混用。测试不参与模型选择或阈值搜索。
 
-评测入口支持 `--split val`，不训练模型，不扫描训练集标签，也不搜索置信度阈值。
-所有模型后续都应遵守同一几何规则：框映射并裁剪回原图后，剔除宽或高不大于零的空框，
-记录剔除数量；任何正面积小框都保留，不设置最小面积过滤阈值。
-COCO 评测器仍严格拒绝无效框，不通过放宽指标校验掩盖导出错误。
+### 已完成结果
 
-### 复杂度与时延口径
-
-- Params 为未融合、单类 checkpoint 的总参数量，单位 M。
-- GFLOPs 在 `[1,3,640,640]` 上用 THOP 统计未融合网络，按 `2 × MACs / 1e9` 计算；
-  是模块算子覆盖范围内的近似值，不包括 NMS、数据读取和其他图像预处理。
-- 时延使用新加载的模型、FP32 输入/权重、batch 1、方形输入、不使用 TTA；
-  记录实际 TF32 开关，不把 FP32 张量等同于保证关闭 TF32。
-- 预先读入来自验证集三个来源的固定六张图；轮流预热 50 次、测量 300 次，
-  每张前后同步 CUDA。计时包括预处理、H2D、网络、解码、NMS、坐标还原、
-  D2H 和空框过滤；不包括磁盘读取、模型加载、预热和绘图。
-- 同时保存原始计时、均值、中位数、P95、标准差和顺序 FPS。
-  计时使用 `confidence=0.25`，AP 预测仍使用 `score_floor=0.001`。
-- 这是本地有桌面应用运行的 RTX 4060 Laptop 实测，记录驱动、软件版本、显存和温度快照。
-  后续服务器上的五模型横向比较必须在同一服务器重新测量 YOLOv8s，不能直接混用本机速度。
-
-### 产物与已完成的入口验证
-
-新运行保存通用的 `resolved_config.yaml`、`training_state.json` 和 `experiment_summary.json`；
-历史 pilot 的原有文件名和结果不改写。每轮日志和 Loss/mAP 曲线保留在运行目录，
-统一验证结果在 `validation/`，冻结后的测试结果在 `test/`。
-测试评测另输出 `evaluation_summary.json`、`benchmark.json`、`summary.csv`、
-COCO 预测、PR 曲线和 GT/预测对照图。
-
-启动前已完成真实 GPU 中断/恢复检查：恢复 183 组 AdamW 参数状态、AMP scaler、
-原调度 epoch，并在同一目录完成第二轮；没有用 mock 训练替代。
-零面积边界框的真实失败已复现并修正；当前 23 项回归测试通过，包括真实 TensorBoard 事件的历史步数、重复导入与缺失 epoch 检查。
-`outputs/formal_input_snapshot.json` 保存原输入与包版本快照，
-`outputs/yolov8s_formal_protocol.json` 保存正式配置、实现代码哈希和评测协议。
-启动前确认 5235 个原 train/val 文件及全部 151 个已安装包版本未改变。
-
-### tmux 与 TensorBoard 监控
-
-本次正式训练在第 40 轮完整保存后中断，随后在 tmux 中从第 41 轮恢复，
-仍沿用原运行目录、数据副本和 150 轮总预算，没有从头重训。
-会话名为 `cv_task`，窗口 `cv_task` 显示训练输出，窗口 `tensorboard` 显示网页服务输出：
-
-```bash
-tmux attach -t cv_task
-
-# 也可从另一个终端直接选择窗口
-tmux select-window -t cv_task:cv_task
-tmux select-window -t cv_task:tensorboard
-```
-
-默认快捷键 `Ctrl+b` 后按 `0`/`1` 切换窗口，`Ctrl+b` 后按 `d` 离开会话，
-不会停止训练。训练输出继续追加到 `outputs/training/yolov8s_formal_console.log`，
-TensorBoard 服务输出写入 `outputs/training/yolov8s_formal_tensorboard_console.log`。
-不要用 `Ctrl+c` 代替 detach：它会中断当前窗口中的程序。
-
-浏览器打开 <http://127.0.0.1:6006>，在 **SCALARS** 中查看 `train/*_loss`、
-`val/*_loss`、`metrics/*` 和 `lr/*`。Loss 标签过滤器可填 `(train|val)/.*loss`。
-右上角齿轮设置中勾选 **Reload data** 可开启网页自动刷新，默认刷新周期为 30 秒；
-服务端每 5 秒重新加载事件文件，框架写入也可能有缓冲。
-本机监听地址仅为 `127.0.0.1`，不向局域网公开服务。
-
-TensorBoard 使用 `2.21.0`：它不再依赖当前 setuptools 已移除的 `pkg_resources`。
-只在 `cv_task` 环境新增 TensorBoard 及其依赖，原有 151 个包的版本未改动；
-未安装 TensorFlow，查看这些标量曲线不需要它。
-
-`script/backfill_tensorboard.py` 用于首次接入监控时补录已完成的历史：
-
-```bash
-# 必须先停止该运行，并在原生 TensorBoard 回调第一次创建事件文件之前执行
-conda run -n cv_task python -s -B script/backfill_tensorboard.py \
-  --run outputs/training/yolov8s_formal
-```
-
-本次第 1–40 轮已补录，**不要再次执行这个命令**；检测到已有事件文件会拒绝重复写入。
-补录仅读取 `training_state.json` 中确认完成的 CSV epoch，沿用原生标签及从 1 开始的 Step；
-不插值，不重算 Loss，不访问测试集。历史事件的 wall time 是补录时间，
-因此查看完整训练曲线应使用 **STEP** 横轴，而不是 WALL/RELATIVE。
-第 41 轮以后由原生回调持续记录，已核对续训后的实际标量与对应 CSV 一致。
-迁移时的 checkpoint 哈希、依赖变化和代码哈希保存在
-`outputs/yolov8s_formal_monitoring_migration.json`，原正式协议快照保留不覆盖。
-已实际打开 TensorBoard 并检查 Loss 曲线，截图为
-`outputs/training/yolov8s_formal/tensorboard_loss_preview.png`。
-
-### 正式训练完成后的冻结测试结果
-
-已完成 150/150 轮正式训练。按预先约定的原生验证集 mAP@0.5:0.95 选择，
-最终使用第 **25** 轮的 `weights/best.pt`，不是第 150 轮的 `last.pt`。
-测试前保存 `pretest_freeze.json`，权重 SHA-256 为
+正式实验完成 150/150 轮，在第 40 轮后因切换 tmux/TensorBoard 原生续训。
+最终选择第 25 轮 `best.pt`，不是末轮 `last.pt`。最佳权重 SHA-256：
 `d1790586c7ff495fa5156aeb610b63cf0682fa121fa0fe5c885ba2e86664639a`。
-配置、原始 train/val 文件以及既有包版本核对通过；测试后权重哈希未改变。
-没有根据测试集选择其他 checkpoint、搜索阈值或重新训练。
 
-测试集包含 **575 张图片、1214 个 GT 框**。以下均为统一评测器的结果，
-不是框架训练日志中自动选取置信度工作点的 P/R：
-
-| 数据集 | Precision | Recall | mAP@0.5 | mAP@0.5:0.95 | TP | FP | FN |
+| 集合 | Precision | Recall | mAP@0.5 | mAP@0.5:0.95 | TP | FP | FN |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | val | 42.50% | 42.66% | 37.38% | 19.87% | 221 | 299 | 297 |
 | test | 41.59% | 38.71% | 32.45% | 17.88% | 470 | 660 | 744 |
 
-P/R 使用 `confidence=0.25`、匹配 `IoU=0.50`；AP 使用分数下限 `0.001`、
-NMS `IoU=0.70`、每图最多 100 个框，固定方形 640 输入。
-测试导出共有 32965 个低分数下限预测框，按冻结规则剔除 1 个非正面积框；
-这些低分预测不等于 P/R 工作点上的检出数量。
+测试包含 575 图、1214 GT；低分数下限下导出 32965 个预测，剔除 1 个空框。这不等于 P/R 工作点的检出数。
 
 | 模型 | Params / M | GFLOPs | 平均时延 / ms | 中位数 / ms | P95 / ms | 标准差 / ms | 顺序 FPS |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | YOLOv8s，单类 | 11.136 | 28.642 | 11.84 | 10.53 | 19.23 | 3.85 | 84.49 |
 
-时延是 RTX 4060 Laptop 上的单张端到端实测：FP32 张量、batch 1，
-固定六张**验证集**图片轮流预热 50 次、测量 300 次，不是对 575 张测试图片计时取均值。
-包含预处理、传输、网络和后处理，不包含磁盘 I/O；CUDA matmul TF32 为关闭、
-cuDNN TF32 为开启。测量时保留桌面应用，GPU 快照温度 67°C，
-结果不能直接与不同服务器或纯网络耗时相比较。
-参数量与 GFLOPs 为未融合网络的统计，后者使用 THOP 的 `2 × MACs` 近似口径。
+参数量为未融合模型总参数；GFLOPs 是 THOP 在 `[1,3,640,640]` 的 `2×MACs/1e9` 近似计数，不包括 NMS/预处理。
+时延在 RTX 4060 Laptop 上用固定六张验证图片轮流预热 50 次、测量 300 次，batch 1、FP32 张量，逐张前后同步 CUDA。
+包含预处理、H2D、网络、解码、NMS、还原坐标、D2H 及空框过滤，排除模型加载、磁盘 I/O、预热、绘图。
+CUDA matmul TF32 关闭，cuDNN TF32 开启；保留桌面应用，GPU 快照温度 67°C。
+这不是 575 张测试图的平均时延，也不能直接与服务器或纯网络耗时比较；五架构比较须在同一硬件重新测量。
 
-#### 漏检、误检与训练趋势
+### 主要问题
 
-`test/error_analysis.json` 对保存的预测执行固定工作点的一对一匹配，记录逐图与来源统计：
-
-| 测试来源 | 图片 | GT 框 | Precision | Recall | FP | FN |
+| 测试来源 | 图片 | GT | Precision | Recall | FP | FN |
 |---|---:|---:|---:|---:|---:|---:|
 | AsphaltCrack300 | 155 | 216 | 28.93% | 68.98% | 366 | 67 |
 | CFD | 24 | 69 | 38.46% | 21.74% | 24 | 54 |
 | crack500 | 396 | 929 | 53.13% | 32.94% | 270 | 623 |
 
-小框按原图 bbox 面积 `<32×32` 像素定义：共 320 个，在全体 GT 的原有匹配中
-只命中 5 个、漏检 315 个，固定工作点召回率为 **1.56%**。
-这不是 COCO AP_small，也没有删除大框后重新匹配；极小连通域框也包含在分母中。
-该统计说明本基线的小框检出不足，后续应在训练/验证集审查极小连通域和检测框的实例粒度，
-不能直接因测试结果而改动本版冻结标注或阈值。
+原图 bbox 面积 `<32×32` 像素的小框共 320 个，在全体 GT 的匹配中只命中 5 个、漏检 315 个，工作点召回率 1.56%。
+这不是 AP_small，也没有删去大框重新匹配；极小连通域包含在分母中，需要在训练/验证集审查实例粒度。
 
-已查看三个来源共六张 GT 绿框/预测橙框对照图，具体例子：
+六张固定预览图位于 `test/previews/`，GT 绿框、预测橙框：
+Asphalt `010_03` 出现过大框覆盖多个 GT（TP=0/FP=1/FN=3）；CFD `001` 有长框与多 GT 粒度不一致（1/1/1），
+CFD `005` 的低对比度细长裂缝漏检；crack500 `081113_1281_361` 有边缘小框和定位偏差（0/2/2），
+相邻 `081113_1281_721` 则命中两框但多检一框（2/1/0）。完整逐图统计在 `test/error_analysis.json`。
+这不是场景分层抽样，没有强反光/遮挡标签，不把亮色石粒直接判为强反光或给出相关定量结论。
 
-- `01_AsphaltCrack300_AsphaltCrack300_010_03.jpg`：预测出一个覆盖范围过大的框，
-  未达到与三个 GT 的匹配 IoU；统计为 TP=0、FP=1、FN=3。
-  看到了大致裂缝区域，不代表定位和实例划分正确。
-- `02_CFD_CFD_001.jpg`：一个较长预测框覆盖多个 GT 所在区域，一对一匹配后仍有漏检，
-  另有小框误检；统计为 TP=1、FP=1、FN=1。
-- `05_CFD_CFD_005.jpg`：细长、低对比度裂缝没有达到固定阈值的预测，FN=1。
-- `03_crack500_crack500_20160222_081113_1281_361.jpg`：边缘小框及定位偏差问题明显，
-  统计为 TP=0、FP=2、FN=2；相邻的 `06_crack500_crack500_20160222_081113_1281_721.jpg`
-  则有两个正确匹配，但仍多检一个框，说明同一来源的难度也有差异。
+`plots/results.png` 显示训练 Loss 下降、验证 Loss 后期回升且原生 Recall 下降，存在训练/验证分化。
+应审查小框和掩码连通域标注粒度，而不是根据测试集调阈值或直接增加轮数。
+已从保存预测复算精度与计数，并核对 300 次时延的均值、P95 和 FPS，未更换模型或重跑全测试集推理。
 
-上述图片不是带有场景标签的分层抽样。本版没有强反光、遮挡等场景标注，
-不将亮色石粒直接判作强反光，也不据此给出这些场景的定量结论。
-裂缝掩码按连通域导出的多个框与模型预测整段裂缝的粒度差异，需要与原掩码一起审查。
+## 清理与归档说明
 
-`results.png` 显示训练 Loss 持续下降，而验证 Loss 后期回升、原生验证 Recall 下降，
-存在训练/验证表现分化；最后一轮并不优于按规则保存的最佳权重。
-因此本次使用早期最佳权重是既定验证集选择的结果，并非查看测试集后回退。
-这里只完成了单模型、单种子的本地基线，不能据此判断五种架构的优劣。
+- 最终推理模型在 `models/trained/yolov8s_formal/best.pt`。全部 8 个正式权重均保留，迁移前后 SHA-256 一致；`models/pretrained/` 没有改动。
+- 正式指标、预测、曲线、日志和 TensorBoard 事件保留；模型迁移不是重新训练。
+- 清理了旧 pilot/断点烟测、四份重复数据副本、TensorBoard wheel 下载缓存，以及源码/测试的生成缓存。
+  删除副本前核对 5235 个冻结输入文件及每份副本的 5232 个输入文件，确认可由冻结数据重建；删除临时文件逻辑大小约 860 MiB。
+- `outputs` 现在主要保留正式实验及项目内运行缓存；新训练不再在根目录散落随机数据副本。
+- `audit/cleanup_manifest.json` 记录删除列表、路径迁移、原始权重哈希和保护清单。
+- 迁移前的元数据和旧 README 保存在 `audit/before_cleanup.zip`。当前摘要、CSV 和性能记录中的有效模型路径已更新。
+- `args.yaml`、`source_config.yaml`、`resolved_config.yaml` 是历史训练记录，原件中的旧数据副本路径不再可用；不要把已完成实验的历史参数直接当作恢复指令。
+  当前完成状态明确不支持恢复，原始数据仍在 `datasets/processed/crack_detection/`。历史哈希不为迎合新目录而重算。
+- `test/metrics.json`、预测 JSON、PR 图及 TensorBoard 事件的内容哈希未因清理改变。
 
-#### 测试产物与复核
+`test/summary.csv` 是可加入多模型对比表的完整指标行；`benchmark.json` 保留原始计时，`evaluation_summary.json` 保留评测配置和模型哈希。
+历史 pilot 仅用于调通流程，清理后不再作为正式结果目录对外引用。
 
-结果目录为 `outputs/training/yolov8s_formal/test/`：
+## 历史目录整理的验收记录
 
-- `summary.csv`：包含精度、参数量、GFLOPs、时延与 FPS 的完整横向比较行。
-- `metrics.json`、`predictions_coco.json`：统一指标及原图坐标的预测。
-- `benchmark.json`：硬件/软件与计时口径、300 次原始计时。
-- `evaluation_summary.json`：冻结权重哈希、评测配置与产物路径。
-- `pr_curve.png`、`previews/`：测试集 PR 曲线和六张可视化对照图。
-- `error_analysis.json`：逐图、来源、小框统计和复核状态。
+以下为历史目录整理时在 `cv_task` 环境完成的检查记录，没有新增或升级依赖；不代表统一入口已完成本轮验证：
 
-原始控制台记录为 `outputs/training/yolov8s_formal_test_console.log`。
-已从保存的预测重算 P/R、AP 与 TP/FP/FN，结果完全一致；
-已核对 300 次计时的平均值、P95 以及 `FPS=1000/平均毫秒数`，
-没有为复核更换模型、阈值或重跑全测试集推理。
+- 重新发现并通过 21 项回归测试；冻结数据独立校验通过，3191 张图、6767 个框。
+- 在 `/tmp` 临时目录实跑两轮、5% 训练数据的中断与恢复，恢复 183 组优化器状态和 AMP scaler。
+  未完成时 checkpoint 留在运行目录；完成后四个烟测 checkpoint、绘图及两轮事件分别归档，
+  完成状态指向新模型位置；同名模型目录冲突在训练前拒绝。临时目录已清除。
+- 使用迁移后的正式 `best.pt` 实际评测 274 张验证图，P/R、AP、TP/FP/FN 与保存结果一致；
+  可选性能分支以六次计时实跑，只验证入口，不替换正式性能数据。
+- 全部 8 个正式权重哈希一致；正式预测、指标、PR 和 TensorBoard 文件哈希保留，
+  原训练 Loss 的 1–150 步仍完整。未重新训练正式实验或覆盖正式测试结论。
+
+完整验收字段保存在 `audit/cleanup_manifest.json` 的 `verification` 中。
