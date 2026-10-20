@@ -1,199 +1,208 @@
 # 裂缝目标检测多架构对比
 
-已完成数据预处理，以及历史 YOLOv8s 的 150 轮正式训练、冻结权重选择和测试集评测。
-目前只有这一项正式模型结果，不是五模型架构优劣结论。代码不导入或调用 `tutorial/` 的函数，原始数据不修改、不删除。
+仓库已保留 YOLOv8s 的 150 轮正式训练、冻结权重和测试集评测，以及 YOLO11s 的 150 轮正式训练和验证结果。新增 Faster R-CNN、RetinaNet、RT-DETR-L 训练与统一评测入口不代表三个新模型已完成正式实验，也不构成五架构优劣结论。既有产物不改写，代码不导入或调用 `tutorial/` 的函数，原始数据不修改、不删除。
 
 ## 环境与目录
 
-所有预处理、训练、评测和检查均使用 `cv_task` Conda 环境中的解释器：
+项目使用 uv 管理 Python 和依赖，默认虚拟环境位于项目根目录的 `.venv/`。所有预处理、训练、评测和检查均在项目根目录执行：
 
 ```text
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B
+uv run --no-sync python ...
 ```
 
-不使用系统 Python。项目仅保留一份 `requirements.txt`，覆盖预处理、训练、评测和 TensorBoard；代码不自动安装或升级包。
+无需激活虚拟环境或 Conda 环境，也不直接使用系统 Python。日常命令使用 `uv run --no-sync python` 复用已准备好的项目环境，不安装、升级依赖或改写锁文件。
+
+- `pyproject.toml`：声明 Python 兼容范围、直接依赖和包下载源，覆盖预处理、Ultralytics 训练、COCO 评测和 TensorBoard。
+- `uv.lock`：记录完整依赖解析结果，由 uv 管理，不手动编辑。
+- `.python-version`：记录本项目默认请求的 Python 版本。
+- `.venv/`：本机实际运行环境，不提交到版本控制；前三个文件应提交，以便在其他机器重建环境。
+
 历史环境快照中的主要版本为 PyTorch `2.8.0+cu128`、torchvision `0.23.0+cu128`、Ultralytics `8.3.221`、pycocotools `2.0.10`、TensorBoard `2.21.0`；历史正式运行的环境审计记录保留在其 `audit/` 中。
 
-### 服务器环境安装
+### 新建 uv 环境（本地或其他服务器）
 
-统一依赖面向 Linux x86_64、Python 3.12 和 NVIDIA GPU，沿用当前 PyTorch CUDA 12.8 基线。
+统一依赖面向 Linux x86_64、Python 3.12 和 NVIDIA GPU，沿用当前 PyTorch CUDA 12.8 基线。服务器需先安装 uv；已有项目无需重新执行 `uv init` 或 `uv lock`。
 先用 `nvidia-smi` 检查服务器 GPU 与驱动；驱动需要兼容所选 CUDA wheel。
 PyTorch wheel 自带 CUDA 运行库，不要求另外安装同版本的系统 CUDA Toolkit。
 
 ```bash
-conda create -n cv_task python=3.12 -y
-conda activate cv_task
-python -m pip install -r requirements.txt
-python -m pip check
-python -c "import torch; print(torch.__version__, torch.version.cuda); print('CUDA 可用:', torch.cuda.is_available())"
+nvidia-smi
+# 使用 uv 管理的 Python，按已提交的项目配置与锁文件创建或同步 .venv
+uv sync --locked --managed-python
+uv pip check --python .venv/bin/python
+uv run --no-sync python -c "import torch; print(torch.__version__, torch.version.cuda); print('CUDA 可用:', torch.cuda.is_available())"
 ```
 
 需要代理时，在安装前配置服务器可用的代理；只有服务器也配置了 `proxy_on` 命令时才直接执行它，
 不要把本机的 `127.0.0.1` 代理地址直接当作服务器上的代理。
-本机 OpenCV 来自 Conda，版本号为 `5.0.0`；统一文件使用 PyPI 对应的 `opencv-python==5.0.0.93` wheel，
+OpenCV 使用 PyPI 的 `opencv-python==5.0.0.93` wheel，模块报告的 `cv2.__version__` 为 `5.0.0`；
 不同时安装另一份 `opencv-python-headless`。Ubuntu/Debian 精简镜像若缺少 `libGL.so.1` 或 GLib，
 需由服务器管理员安装 `libgl1`、`libglib2.0-0` 系统运行库。
-这里只锁定项目直接依赖，完整历史环境快照仍保存在正式实验的 `audit/`，不把本机所有包搬到服务器。
+`torch` 和 `torchvision` 通过 `pyproject.toml` 中的 `tool.uv.sources` 显式绑定到 PyTorch CUDA 12.8 官方索引；该索引设置 `explicit = true`，其他包默认从 PyPI 获取。完整传递依赖由 `uv.lock` 锁定，不再维护独立的 `requirements.txt`。历史实验环境快照仍保存在正式实验的 `audit/`，不随本次环境迁移改写，也不把旧环境中的所有包复制到新环境。
+
+### 当前远程服务器：Conda、数据盘与手动训练
+
+上述 uv 用法保留给本地开发和需要新建环境的情形；当前已部署的服务器在 `/root/cv_task` 使用既有的 Conda 环境，不执行 `uv sync`，也不由训练脚本安装依赖：
+
+```bash
+cd /root/cv_task
+conda activate cv_task
+bash script/train_three_models.sh
+```
+
+只有在终端中手动执行上述 `bash` 命令时，脚本才会依次启动 Faster R-CNN、RetinaNet、RT-DETR-L；任一训练失败会停止后续模型并保留已有 checkpoint。脚本使用已激活环境中的 `python`（可用 `PYTHON_BIN` 覆盖），默认每个模型训练 150 轮，batch 分别为 8、8、16，`WORKERS=4`。可临时指定 `EPOCHS`、`FASTER_BATCH`、`RETINA_BATCH`、`RTDETR_BATCH`、`WORKERS`，并用 `TORCHVISION_CONFIG`、`ULTRALYTICS_CONFIG` 覆盖 YAML；不会自动启动 tmux 或 TensorBoard。连续训练入口为 `script/train_three_models.sh`，不是旧的根目录占位脚本。
+
+默认值经过当前 RTX 4080 SUPER（32,760 MiB 显存、16 核 CPU 配额）实测校准：从原训练集抽取 128 张图（包括目标数最多的样本）、验证集抽取 24 张图，每次训练 2 轮，对比 batch 8/16 和 workers 4/8。下表吞吐为第 2 轮纯训练段（含数据加载），显存为两轮训练段的最大 PyTorch reserved；不是完整正式训练或推理 FPS。
+
+| 模型 | 默认 batch | workers | 短测训练吞吐（图/秒） | 峰值 reserved（GiB） |
+| --- | ---: | ---: | ---: | ---: |
+| Faster R-CNN R50-FPN | 8 | 4 | 38.71 | 4.24 |
+| RetinaNet R50-FPN | 8 | 4 | 39.46 | 3.49 |
+| RT-DETR-L | 16 | 4 | 31.76 | 19.96 |
+
+本次短测中，两个 torchvision 模型的 batch 8 比 16 更快；RT-DETR-L 则是 16 更快。不要仅为占满显存增大 batch。脚本默认值面向这台服务器，本地小显存 GPU 请覆盖 batch；两个 YAML 的本地默认值保持不变。脚本同时将主进程 `OMP_NUM_THREADS`、`MKL_NUM_THREADS` 默认设为 4，可用同名环境变量覆盖。
+
+部署验证全部在服务器既有 `cv_task` Conda 环境中完成：25 项测试通过；真实 Bash 队列完成三个模型的两轮短训练，均产生非零骨干权重更新；重新加载后的统一验证指标与训练结束时一致；三个模型均完成保存点中断及 `--resume` 续训；失败时队列停止、不启动后续模型。另已实际运行三个模型的 `--benchmark`，确认参数量、GFLOPs、时延和 CSV 输出正常；运行条件描述使用中性文本并附实际 GPU 快照，不把服务器结果误标为本地桌面。
+
+TensorBoard 的 SCALARS 页面已实际查看 loss 折线，HTTP 接口中三模型及续训运行均有第 1、2 轮的有限 loss 值。上述临时数据、检查点、日志、验证程序和临时 TensorBoard 服务均已清理，未启动正式训练；环境中的 60 个发行包版本保持不变。这些短测不是正式实验结果。
+
+服务器迁移已完成，并已校验 13,266 个文件。`/root/cv_task/datasets`、`/root/cv_task/models` 和（原先不存在、现已新建的）`/root/cv_task/outputs` 分别软链到 `/root/autodl-tmp/cv_task/` 下的同名目录，因此默认相对路径无需变更，所有新训练输出（包括脚本默认的 `outputs/training/logs/<时间戳>/` 队列和单模型日志）均位于数据盘。`LOG_DIR` 可在手动启动前覆盖；每次启动都会创建新的时间戳日志目录，不覆盖此前日志。
+
+迁移前的服务器代码保存在 `/root/autodl-tmp/cv_task/backups/server_code_20261020_204441.tar.gz`；服务器已有的 `requirements.txt` 未覆盖。数据盘不随系统镜像保存，重要数据和训练权重应另行备份。
+
+如需查看 TensorBoard，在服务器的另一个 tmux 窗口中手动执行；训练脚本不会在后台启动它：
+
+```bash
+cd /root/cv_task
+conda activate cv_task
+tensorboard --logdir outputs/training --host 127.0.0.1 --port 6006
+```
+
+在本地终端建立转发，并保持连接：
+
+```bash
+ssh -p 18396 -N -L 16006:127.0.0.1:6006 root@connect.cqa1.seetacloud.com
+```
+
+随后在本地浏览器打开 `http://127.0.0.1:16006`。服务器 TensorBoard 只监听回环地址，不直接暴露公网端口。
+
 
 ```text
 script/                       # 中文调用说明与命令行入口
 ├── prepare_dataset.py
-├── train_ultralytics.py      # YOLOv8s / YOLO11s 共用训练入口和训练逻辑
-└── evaluate.py               # 冻结权重的统一评测入口
+├── train_ultralytics.py      # YOLOv8s / YOLO11s / RT-DETR-L
+├── train_torchvision.py      # Faster R-CNN / RetinaNet 原生训练循环
+├── train_three_models.sh     # 服务器手动连续训练三个新增模型
+└── evaluate.py               # 五架构冻结权重统一评测
 configs/
 ├── preprocess.yaml
-└── train_ultralytics.yaml    # 两个 YOLO 模型共用的正式训练配置
+├── train_ultralytics.yaml    # 三个 Ultralytics 模型的共享配置和 RT-DETR 覆盖
+└── train_torchvision.yaml    # 两个 TorchVision 模型的原生训练配置
 src/
 ├── config.py                 # 实验配置读取及路径解析
 ├── data/
 │   ├── preprocessor.py       # 掩码审计、框提取、分组与划分
-│   └── dataset_io.py         # YOLO/COCO 导出及独立校验
+│   ├── dataset_io.py         # YOLO/COCO 导出及独立校验
+│   └── detection_dataset.py  # 原尺寸 TorchVision 检测数据集
+├── models/
+│   ├── ultralytics.py        # YOLO / RT-DETR 工厂
+│   └── torchvision.py        # Faster R-CNN / RetinaNet 工厂
 └── evaluation/
     ├── metrics.py            # 模型无关的 COCO AP 和固定阈值 P/R
-    ├── yolo.py               # YOLO 推理、指标、可视化的共用流程
-    └── benchmark.py          # YOLO 参数量、计算量与端到端时延
-tests/                        # 保留全部既有行为回归，按职责分类
-├── data/test_preprocessing.py
+    ├── detection.py          # 五架构预测、指标、可视化的共用流程
+    ├── torchvision.py        # TorchVision 原图推理适配
+    ├── prediction.py         # 原生 xyxy 到统一 COCO xywh 的小型转换
+    └── benchmark.py          # 参数量、计算量与端到端时延
+tests/
 └── evaluation/
     ├── test_metrics.py
-    └── test_yolo.py
-models/
-├── pretrained/               # 训练前的预训练权重
-└── trained/yolov8s_formal/   # 历史 YOLOv8s 正式模型，含 best/last/epoch*.pt
-outputs/training/yolov8s_formal/
-├── validation/               # 历史统一验证结果
-├── test/                     # 历史冻结测试结果
-├── plots/                    # 历史 Loss、原生 PR、混淆矩阵、batch 预览
-├── tensorboard/              # 历史 TensorBoard 事件
-├── logs/                     # 历史 train.log、test.log、tensorboard.log
-├── audit/                    # 历史冻结协议、依赖/输入快照、目录迁移记录
-├── results.csv
-├── training_state.json       # 仅历史运行元数据
-├── experiment_summary.json
-├── args.yaml
-├── source_config.yaml        # 仅历史运行配置副本
-└── resolved_config.yaml      # 仅历史解析配置副本
+    └── test_detection.py
+models/trained/yolov8s_formal/ # 历史 YOLOv8s 正式模型，含 best/last/epoch*.pt
+outputs/training/yolov8s_formal/ # 历史训练记录和冻结评测产物
 ```
 
-当前训练逻辑只位于 `script/train_ultralytics.py`；不存在活动的模型专用训练入口或 `src.training` 用法。
-训练后的统一验证和独立评测均调用 `src.evaluation.yolo.evaluate_checkpoint`。其他架构需要自己的加载、预处理和推理适配，转换为标准 COCO 预测后，可复用 `src.evaluation.metrics.evaluate_predictions`。
+活动训练入口分别是 `script/train_ultralytics.py` 和 `script/train_torchvision.py`，没有 `src.training` 或教程代码依赖。训练后统一验证、独立评测都调用 `src.evaluation.detection.evaluate_checkpoint`；TorchVision 每轮验证直接调用 `evaluate_model`，不写临时 checkpoint。
 
-`configs/train_ultralytics.yaml` 顶层的 `models` 映射维护 `yolov8s`、`yolov11s` 到各自预训练权重的相对路径；`data`、`project`、`trained_models` 也在顶层。配置路径相对于 YAML 文件解析，读取后这些路径为绝对路径；命令行文件路径相对于当前工作目录解析。`training`、`evaluation`、`benchmark` 三段保留正式基线的训练、统一评测和性能测量设置。配置不再包含或要求 `run_type`、单一 `model`、`name`。
+`configs/train_ultralytics.yaml` 的 `models` 包含 `yolov8s`、`yolov11s`、`rtdetr_l`，公共 `training` 后的 `model_overrides.rtdetr_l` 仅覆盖 RT-DETR 不支持或不适宜的选项。`configs/train_torchvision.yaml` 的 `models` 包含 `fasterrcnn_resnet50_fpn`、`retinanet_resnet50_fpn`，其值是本地官方 COCO state_dict。两个配置均以 YAML 文件为基准解析 `models`、`data`、`project`、`trained_models` 路径；命令行文件路径相对于当前工作目录解析。
 
-新运行的目录由 `project/<实际运行名>/` 决定，模型归档根目录由 `trained_models/<实际运行名>/` 决定。运行目录包含如下当前产物：
-
-```text
-outputs/training/<实际运行名>/
-├── data_view/                # 仅本次训练复制的 train/ 与 val/；不复制 test/
-├── validation/               # 训练完成后的统一验证
-├── plots/                    # 训练图片、原生图表等图片产物
-├── tensorboard/              # 原生 Ultralytics TensorBoard 事件
-├── args.yaml                 # 原生 Ultralytics 参数记录
-├── results.csv               # 原生 Ultralytics 训练记录
-├── config.yaml               # 含 model_name、name 基名和轮数覆盖值的解析配置
-└── experiment_summary.json   # 简洁引用模型、运行目录、checkpoint、指标和验证结果
-models/trained/<实际运行名>/
-└── best.pt、last.pt、epoch*.pt 等整个原生 weights/ 目录内容
-```
-
-完成时整个原生 `weights/` 归档到 `trained_models/<实际运行名>/`，图片归入 `plots/`，原生事件归入 `tensorboard/`。`experiment_summary.json` 记录模型、实际运行目录、最佳及最后 checkpoint、训练轮数、指标和验证摘要路径。`config.yaml` 中的 `name` 是运行名基名，实际递增名称见 `args.yaml` 和摘要中的 `run_dir`。新运行不生成自定义 `training_state.json`、`source_config.yaml` 或 `resolved_config.yaml`，也不通过 CSV 回读训练进度或维护自定义最佳 checkpoint 事件状态。
+每个新运行保存在 `outputs/training/<实际运行名>/`，解析后的 `config.yaml`、`results.csv`、TensorBoard、曲线和验证产物留在该目录。Ultralytics 另有其原生图片和事件整理；TorchVision 的 `results.csv` 记录总训练损失、各 `train/*` 分项、P/R、mAP50 与 mAP50-95。两条训练路径完成后均将整个 `weights/` 目录移动到 `models/trained/<实际运行名>/`，摘要中的 best/last checkpoint 都指向归档路径；不保留第二份副本。
 
 ## 常用命令
 
-以下命令在项目根目录执行。
+以下命令在项目根目录执行。首次准备环境可按上节运行 `uv sync --locked --managed-python`；日常任务一律使用 `uv run --no-sync python`，不在命令中安装或升级依赖。
 
 ```bash
 # 对现有冻结数据进行独立校验，不重新生成数据
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py \
+uv run --no-sync python script/prepare_dataset.py \
   --stage validate --output datasets/processed/crack_detection
 
-# 仅审计：目标目录须尚不存在
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py \
-  --stage audit --output datasets/processed/crack_audit
+# Ultralytics：YOLOv8s、YOLO11s、RT-DETR-L
+uv run --no-sync python script/train_ultralytics.py --model yolov8s
+uv run --no-sync python script/train_ultralytics.py --model yolov11s
+uv run --no-sync python script/train_ultralytics.py --model rtdetr_l
 
-# 完整预处理：输出目录须尚不存在
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/prepare_dataset.py
+# TorchVision：Faster R-CNN、RetinaNet
+uv run --no-sync python script/train_torchvision.py --model fasterrcnn_resnet50_fpn
+uv run --no-sync python script/train_torchvision.py --model retinanet_resnet50_fpn
 
-# 使用默认配置启动新的 YOLOv8s 正式训练
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py
-
-# 使用同一配置启动新的 YOLO11s 正式训练
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
-  --model yolov11s
-
-# 新训练时以命令行覆盖 YAML 中的轮数
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
-  --model yolov8s --epochs 150
-
-# 只恢复一个未完成运行保留的原生 checkpoint；不能附加其他训练参数
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
+# 新训练可覆盖轮数；恢复只能给对应运行的 last.pt，不能附带其他训练参数
+uv run --no-sync python script/train_torchvision.py \
+  --model retinanet_resnet50_fpn --epochs 20
+uv run --no-sync python script/train_ultralytics.py \
   --resume outputs/training/<未完成实际运行名>/weights/last.pt
 
-# 使用冻结权重独立评测验证集，另写新目录，不覆盖正式结果
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/evaluate.py \
-  --config configs/train_ultralytics.yaml \
-  --weights models/trained/yolov8s_formal/best.pt \
-  --split val --output outputs/evaluation/yolov8s_val
+# RT-DETR-L 冻结权重评测和端到端基准
+uv run --no-sync python script/evaluate.py \
+  --config configs/train_ultralytics.yaml --model rtdetr_l \
+  --weights models/trained/rtdetr_l_formal/best.pt \
+  --split val --output outputs/evaluation/rtdetr_l_val --benchmark
 
-# 递归发现全部行为回归
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B -m unittest discover -s tests -v
-
-# 查看某个运行的原生训练曲线；不需要安装 TensorFlow
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B -m tensorboard.main \
-  --logdir outputs/training/<实际运行名> \
-  --host 127.0.0.1 --port 6006 --load_fast=false
+# Faster R-CNN 冻结权重评测
+uv run --no-sync python script/evaluate.py \
+  --config configs/train_torchvision.yaml --model fasterrcnn_resnet50_fpn \
+  --weights models/trained/fasterrcnn_resnet50_fpn_formal/best.pt \
+  --split val --output outputs/evaluation/fasterrcnn_val
 ```
 
-`train_ultralytics.py --config` 默认 `configs/train_ultralytics.yaml`。`--model` 只能是 `yolov8s` 或 `yolov11s`，默认 `yolov8s`；`--epochs` 只在新训练时覆盖 YAML 的 `training.epochs`。新运行名以 `<model>_formal` 为基础，由 Ultralytics 自动递增以避免覆盖已有运行；没有 `--name` 参数。
+### 五架构训练与评测约定
 
-`--resume <checkpoint>` 必须单独使用，并直接执行原生 `YOLO(checkpoint).train(resume=True)`。它只能恢复仍未完成、其 `weights/` 尚在运行目录中的 checkpoint；完成运行的模型已经归档，不能继续训练。归档拒绝覆盖同名模型目录。
+Ultralytics 入口的 `--model` 选择 `yolov8s`、`yolov11s` 或 `rtdetr_l`，默认 `yolov8s`；新运行先合并公共 `training` 和模型专属覆盖，再以 `--epochs` 作最终覆盖，最后将有效配置保存到运行的 `config.yaml`。YOLO 保留 AMP、AdamW、`nbs=16` 的框架累计 batch 语义；RT-DETR 的覆盖使用 `amp: false`、`deterministic: false`，避开其匈牙利匹配和 `grid_sample` 的已知限制。RT-DETR 预测使用原生 query 解码，不追加 NMS，并统一按 `score_floor` 和 `max_detections` 截断。
 
-评测入口为 `script/evaluate.py`：`--weights`、`--output` 必填，`--split` 只能是 `val` 或 `test`（默认 `val`），`--benchmark` 可额外测量固定代表性验证样本上的性能。`validate` 不读取原始数据或预处理配置，必须指定 `--output`；预处理拒绝覆盖已有目标目录。
+TorchVision 入口的 `--model` 选择 `fasterrcnn_resnet50_fpn` 或 `retinanet_resnet50_fpn`，默认 Faster R-CNN。它从本地官方 COCO state_dict 加载后替换单类输出，保留 FrozenBatchNorm2d、COCO 的 `eps=0` 和三层可训练骨干；RetinaNet 还保留原分类塔，只重新学习类别输出。训练使用原生 PyTorch 循环、SGD、余弦调度、CUDA AMP 和 `nbs / batch` 梯度累积；每轮直接验证内存模型，不为验证复制网络或写临时权重，完成指标和日志后保存 last，验证 mAP50-95 改善时保存 best。分项 Loss、总 Loss、学习率和验证指标写入 `results.csv`、TensorBoard，并生成曲线。验证没有 `val_loss`：本项目用推理模式下的统一 COCO 指标选 best，不切回训练模式伪造 validation loss。
 
-TensorBoard 地址为 <http://127.0.0.1:6006>。训练期间原生事件写在运行目录根层，结束后移入 `tensorboard/`；将 `--logdir` 指向运行目录即可递归发现事件。SCALARS 中可用 `(train|val)/.*loss` 过滤 Loss。历史 `yolov8s_formal` 事件的前 40 轮曾从真实 CSV 补录，后续由原生回调记录；补录事件的 wall time 是导入时间，因此查看这份历史完整曲线应使用 **STEP** 横轴。该历史事件不被重新生成或改写。
+TorchVision 也支持同文件内的 `model_overrides`。Faster R-CNN 专属覆盖为 `deterministic: false`：当前 torchvision 开启确定性算法会把 CUDA RoIAlign 切换到编译回退，已在本机 8GB GPU 测试中触发显存不足。该覆盖保留 640×640、batch 2、随机种子 42 和 AMP，使用常规 CUDA RoIAlign，不保证逐位确定性。RetinaNet 保留确定性设置，并配置 CuBLAS 所需工作区；这些差异随每次有效配置保存。
 
-## YOLO11s 训练入口与历史流程验证
+TorchVision 验证与独立重载评测统一使用 FP32、关闭 cuDNN benchmark 和确定性算法选择，避免评测结果受训练遗留的卷积后端状态影响；每个训练 epoch 开始前再恢复所选模型的训练确定性设置。种子初始化只在创建/恢复运行时执行，不在每轮验证后重置数据增强的随机序列。
 
-YOLO11s 使用统一入口，而不是独立脚本：
+TorchVision 数据集读取原始尺寸 RGB `[0,1]` 张量和原图 `xyxy` 框；其 `GeneralizedRCNNTransform` 固定拉伸为 640×640、采用 ImageNet 均值/标准差归一化，并将输出框还原到原图。评测适配层不再做第二次反变换。冻结 COCO 的类别为 `category_id=1`；YOLO/RT-DETR 内部 crack 类别为 0，Faster R-CNN 前景标签为 1，RetinaNet sigmoid 前景标签为 0，导出时全部明确映射回 COCO 1。
 
-```bash
-/home/long753/miniconda3/envs/cv_task/bin/python -s -B script/train_ultralytics.py \
-  --config configs/train_ultralytics.yaml --model yolov11s
-```
+TorchVision checkpoint 保存 `model_name`、`model` state_dict、optimizer、scheduler、GradScaler、从 0 开始的已完成 epoch、`best_map` 和 JSON 可序列化配置；恢复使用运行目录的 `config.yaml`。评测脚本的 `--model` 是可选的：TorchVision 必须与 checkpoint 内 `model_name` 一致，省略时从该元数据识别；Ultralytics 同样从 checkpoint 架构/元数据识别，无法识别时必须显式传入。`--split` 仅接受 `val` 或 `test`，`--output` 必填；评测从不使用测试集调阈值。
 
-该模型在共用 YAML 的 `models.yolov11s` 中选择预训练权重。除模型权重和自动生成的运行名外，正式训练、验证及性能测量配置与 YOLOv8s 正式基线一致：150 轮、640×640、batch 2、AMP、AdamW、种子 42，使用同一冻结数据划分，不用测试集选权重。
+`--benchmark` 使用同一权重、6 张固定验证原图、batch 1、FP32、50 次预热、300 次轮转计时，并在每次测量前后同步 CUDA。计时从内存原始 BGR 到 CPU 最终检测，包含预处理、H2D、网络、解码/后处理、坐标还原、D2H，排除权重加载、图像 I/O、预热和绘图。临时 smoke 只在临时配置中减少 warmup/iterations。五个模型的时延均采用 `confidence=0.25` 工作点，AP 评测另用 `score_floor=0.001`，不混用两种阈值。YOLO 保留历史 THOP 的 `2×MACs` GFLOPs 口径；TorchVision 与 RT-DETR 使用 `torch.profiler(with_flops=True)` 已报告算子的说明性合计，并列出未报告 FLOPs 的算子。proposal、NMS、ROI、attention 或自定义算子可能漏计，不能把这些不同计数器的数值直接作为完整跨框架 FLOPs 排序。
 
-官方权重名为 **`yolo11s.pt`**，没有 `v`。历史下载前已在终端执行 `proxy_on`，再从
-[Ultralytics 官方发布地址](https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11s.pt)
-下载到 `models/pretrained/yolo11s.pt`，未安装或升级依赖。已实际加载并确认是 s 规格、COCO 80 类、包含 C3k2/C2PSA 的 YOLO11 架构；本地文件 SHA-256 为 `85a76fe86dd8afe384648546b56a7a78580c7cb7b404fc595f97969322d502d5`。
+### 新增三个模型的流程验收
 
-统一入口已完成本轮小样本验证，尚未启动新的正式 150 轮实验。以下仍为切换入口前的历史记录，不能作为模型正式精度或架构优劣结论：当时在 `cv_task` 环境中用 5% 训练数据（117 张）实际训练了 2 轮，并核对：
+已在现有 uv 环境完成真实 GPU 小测试，不是三个新模型的正式精度结果：
 
-- AMP 与 GradScaler 正常启用，训练/验证 Loss 有限，骨干卷积参数确实更新。
-- 4 个检查点完成历史归档，原生 TensorBoard 有第 1、2 轮记录，曲线和预测图已查看。
-- 保存的最佳模型能够重载为单类 crack；274 张验证图的独立评测与训练后验证一致。
-- 原 YOLOv8s 的 274 张验证图指标保持一致，既有正式结果和模型未改写。
-- 当时的 21 项原有回归测试通过，现有 158 个包的版本未改变。
+- 使用同一跨来源临时子集：24 张训练图、12 张验证图，640×640、batch 2，每个模型训练 2 轮。
+- Faster R-CNN、RetinaNet、RT-DETR-L 都有真实骨干参数更新、有限 Loss、检查点和第 1/2 轮 TensorBoard 记录；生成的曲线已查看。
+- 三个模型的最佳权重重载后，统一 P/R、AP、TP/FP/FN 与其训练后验证一致，每图检测上限为 100。
+- 三个模型分别模拟第 1 轮保存后中断，再通过各自公开的 `--resume` 完成第 2 轮；优化器、调度器、AMP（启用时）和日志延续路径已验证。续训不保证与从不中断的训练逐位一致。
+- 三个模型的 `--benchmark` 路径实跑通过；临时配置使用 1 次预热、3 次测量，仅验证统计路径，不作为正式速度对比。
+- YOLOv8s、YOLO11s 各自完整 274 张验证图的指标保持一致。最终 25 项回归测试通过，其中 4 项覆盖新数据集的标签、空目标、翻转和坐标还原。
+- 11762 个受保护文件（既有正式实验、模型、冻结数据及预训练权重等）校验一致；uv 的 58 个包版本、`pyproject.toml` 和 `uv.lock` 未改变。
 
-该历史小测试使用 `/tmp` 中的临时配置、数据副本、日志和权重，验证后已全部删除，没有向项目 `tests/` 新增测试文件，也没有在正式 `outputs/` 或 `models/trained/` 留下小测试模型。
+临时数据、配置、训练权重、脚本、日志和报告已随 `/tmp` 测试目录删除；保留必要的行为回归测试。
+本次没有启动三个新增模型的 150 轮正式实验，没有在正式训练输出目录留下烟测模型。
 
-### 本轮统一入口验证
+所需官方预训练权重已通过 `proxy_on` 下载并校验，保存在下列位置；迁移服务器时也需同步这些文件。
+TorchVision 两个文件的 SHA-256 已匹配官方 URL 的哈希前缀；RT-DETR 已实际加载检查其 RTDETRDecoder 和 COCO 80 类结构。
 
-全部检查在 `cv_task` 环境完成，没有新增永久测试文件或安装、升级依赖：
-
-- 同一临时数据集含 24 张训练图、12 张验证图，分别通过 `--model yolov8s` 和 `--model yolov11s` 真实训练 2 轮。
-- 两个模型均有真实骨干权重更新、有限 Loss，AMP 自检通过，原生检查点中的 GradScaler 状态有效。
-- 每个模型的原生 4 个检查点完成归档，TensorBoard 有第 1、2 轮 Loss 记录，生成的曲线已查看；保存权重重载后的统一验证指标一致。
-- 额外模拟第 1 轮保存后中断，再单独执行 `--resume`，成功完成第 2 轮并保留连续日志和 TensorBoard 步数。
-- 使用新公共配置重评原正式模型的完整 274 张验证图，指标与既有结果一致；21 项原有回归测试通过。
-- 6481 个受保护文件（既有正式模型、实验结果、预训练权重和冻结数据）内容未变，158 个环境包版本未变。
-
-临时配置、数据副本、训练模型、日志、验证脚本和 AMP 辅助权重均已随 `/tmp` 测试目录删除。
-上述仅验证统一入口的训练、续训和评测流程，不代表完整训练后的精度比较。
-用户保留的 `configs/train_yolov8s_formal copy.yaml` 仅是备份，当前程序和命令不引用它。
-
-Ultralytics 首次执行 AMP 自检时可能下载 `yolo11n.pt`，这是框架的辅助检查模型，不会改变
-`--model` 选中的训练模型。如果需要下载，先在同一终端执行 `proxy_on`；本轮测试也按此执行。
+| 本地文件 | 官方来源 |
+|---|---|
+| `models/pretrained/fasterrcnn_resnet50_fpn_coco.pth` | [TorchVision COCO 权重](https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth) |
+| `models/pretrained/retinanet_resnet50_fpn_coco.pth` | [TorchVision COCO 权重](https://download.pytorch.org/models/retinanet_resnet50_fpn_coco-eeacb38b.pth) |
+| `models/pretrained/rtdetr-l.pt` | [Ultralytics 官方权重](https://github.com/ultralytics/assets/releases/download/v8.3.0/rtdetr-l.pt) |
 
 ## 数据与预处理
 
@@ -351,7 +360,7 @@ CFD `005` 的低对比度细长裂缝漏检；crack500 `081113_1281_361` 有边�
 
 完整验收字段保存在 `audit/cleanup_manifest.json` 的 `verification` 中。
 
-
-uv run python script/prepare_dataset.py \
-  --stage validate \
-  --output datasets/processed/crack_detection
+rsync -avP \
+  -e "ssh -p 18396" \
+  datasets/\
+  root@connect.cqa1.seetacloud.com:/root/cv_task/datasets/

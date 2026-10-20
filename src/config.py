@@ -1,4 +1,4 @@
-"""读取统一 Ultralytics 训练与评测配置。"""
+"""读取 Ultralytics 与 TorchVision 共用格式的训练及评测配置。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def load_config(path: Path) -> dict[str, Any]:
     with config_path.open(encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
     if not isinstance(config, dict):
-        raise ValueError("Ultralytics configuration must be a mapping")
+        raise ValueError("Experiment configuration must be a mapping")
 
     models = config.get("models")
     if not isinstance(models, dict):

@@ -1,8 +1,4 @@
-"""YOLO 的统一验证与测试流程，COCO 指标计算复用模型无关的评测器。
-
-本模块负责 YOLO 推理、坐标导出、指标、可视化和可选速度测量；不负责训练。
-其他架构应将自己的预测转换为 COCO 格式，再复用 evaluation.metrics 中的指标函数。
-"""
+"""五种裂缝检测器共用的冻结权重评测流程。"""
 
 from __future__ import annotations
 
@@ -12,8 +8,10 @@ import json
 import os
 from collections import defaultdict
 from pathlib import Path
+from pickle import UnpicklingError
 from typing import Any
 
+import torch
 from PIL import Image, ImageDraw
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,12 +23,19 @@ os.environ["YOLO_CONFIG_DIR"] = str(ULTRALYTICS_CONFIG_DIR)
 os.environ["MPLCONFIGDIR"] = str(MATPLOTLIB_CONFIG_DIR)
 os.environ["YOLO_AUTOINSTALL"] = "false"
 
-from ultralytics import YOLO, settings
+from ultralytics import settings
 
-from src.evaluation.benchmark import benchmark_yolo
+from src.evaluation.benchmark import benchmark_checkpoint
 from src.evaluation.metrics import evaluate_predictions
+from src.evaluation.prediction import coco_detections_from_xyxy
+from src.evaluation.torchvision import predict_torchvision_split
+from src.models.torchvision import MODEL_NAMES as TORCHVISION_MODEL_NAMES
+from src.models.torchvision import load_model as load_torchvision_model
+from src.models.ultralytics import load_ultralytics_model
 
 _ALLOWED_SPLITS = {"val", "test"}
+_ULTRALYTICS_MODEL_NAMES = frozenset({"yolov8s", "yolov11s", "rtdetr_l"})
+_SUPPORTED_MODEL_NAMES = TORCHVISION_MODEL_NAMES | _ULTRALYTICS_MODEL_NAMES
 
 
 def configure_ultralytics() -> None:
@@ -83,62 +88,65 @@ def load_split_annotations(config: dict[str, Any], split: str) -> tuple[Path, di
     return gt_path, annotations, split_images
 
 
-def _coco_detections(boxes: Any, image_id: int) -> tuple[list[dict[str, Any]], int]:
-    """导出面积为正的裁剪框；统计空框而不虚构边界。"""
-    predictions = []
-    discarded = 0
-    for xyxy, score, class_id in zip(
-        boxes.xyxy.cpu().tolist(), boxes.conf.cpu().tolist(), boxes.cls.cpu().tolist(), strict=True
-    ):
-        if int(class_id) != 0:
-            raise RuntimeError(f"Unexpected predicted class {class_id} for image {image_id}")
-        x1, y1, x2, y2 = xyxy
-        width, height = x2 - x1, y2 - y1
-        if width <= 0 or height <= 0:
-            discarded += 1
-            continue
-        predictions.append({
-            "image_id": image_id,
-            "category_id": 1,
-            "bbox": [x1, y1, width, height],
-            "score": float(score),
-        })
-    return predictions, discarded
+def _coco_detections(
+    boxes: Any,
+    image_id: int,
+    *,
+    score_floor: float = 0.0,
+    max_detections: int = 100,
+    image_size: tuple[int, int] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """导出 YOLO/RT-DETR 正面积框，并将内部类别 0 映射为 COCO 类别 1。"""
+    if boxes is None:
+        return [], 0
+    return coco_detections_from_xyxy(
+        boxes.xyxy.detach().cpu().tolist(),
+        boxes.conf.detach().cpu().tolist(),
+        boxes.cls.detach().cpu().tolist(),
+        image_id=image_id,
+        label_to_category={0: 1},
+        score_floor=score_floor,
+        max_detections=max_detections,
+        image_size=image_size,
+    )
 
 
-def predict_split(model: YOLO, config: dict[str, Any], split: str = "val") -> dict[str, Any]:
-    """以 batch=1 流式处理一个数据划分，并将原像素坐标框转换为 COCO 格式。"""
+def predict_split(
+    model: Any,
+    config: dict[str, Any],
+    split: str = "val",
+    *,
+    model_name: str | None = None,
+) -> dict[str, Any]:
+    """以 batch=1 流式处理 Ultralytics 数据划分并导出原图 COCO 坐标。"""
     gt_path, annotations, images = load_split_annotations(config, split)
     data_root = Path(config["data"]).parent
-    image_paths = {
-        (data_root / "images" / image["file_name"]).resolve(): image
-        for image in images
-    }
+    image_paths = {(data_root / "images" / image["file_name"]).resolve(): image for image in images}
     if len(image_paths) != len(images):
         raise ValueError(f"COCO {split} file names must be unique")
 
     evaluation = config["evaluation"]
+    arguments: dict[str, Any] = {
+        "source": str(data_root / "images" / split),
+        "stream": True,
+        "batch": 1,
+        "half": False,
+        "augment": False,
+        "imgsz": config["training"]["imgsz"],
+        "rect": False,
+        "device": config["training"]["device"],
+        "conf": evaluation["score_floor"],
+        "max_det": evaluation["max_detections"],
+        "verbose": False,
+        "save": False,
+    }
+    if model_name != "rtdetr_l":
+        arguments["iou"] = evaluation["nms_iou"]
+
     predictions: list[dict[str, Any]] = []
     seen_image_ids: set[int] = set()
     discarded_nonpositive_boxes = 0
-    # 在固定的 Ultralytics 版本中，路径列表会合并为一个内存批次。
-    # 目录输入会选择文件加载器，并保持 batch=1 的行为。
-    results = model.predict(
-        source=str(data_root / "images" / split),
-        stream=True,
-        batch=1,
-        half=False,
-        augment=False,
-        imgsz=config["training"]["imgsz"],
-        rect=False,
-        device=config["training"]["device"],
-        conf=evaluation["score_floor"],
-        iou=evaluation["nms_iou"],
-        max_det=evaluation["max_detections"],
-        verbose=False,
-        save=False,
-    )
-    for result in results:
+    for result in model.predict(**arguments):
         image = image_paths.get(Path(result.path).resolve())
         if image is None:
             raise RuntimeError(f"Prediction returned an unexpected {split} image path: {result.path}")
@@ -146,8 +154,13 @@ def predict_split(model: YOLO, config: dict[str, Any], split: str = "val") -> di
         if image_id in seen_image_ids:
             raise RuntimeError(f"Prediction returned duplicate {split} image {result.path}")
         seen_image_ids.add(image_id)
-
-        image_predictions, discarded = _coco_detections(result.boxes, image_id)
+        image_predictions, discarded = _coco_detections(
+            result.boxes,
+            image_id,
+            score_floor=float(evaluation["score_floor"]),
+            max_detections=int(evaluation["max_detections"]),
+            image_size=(int(image["width"]), int(image["height"])),
+        )
         predictions.extend(image_predictions)
         discarded_nonpositive_boxes += discarded
 
@@ -160,6 +173,11 @@ def predict_split(model: YOLO, config: dict[str, Any], split: str = "val") -> di
         "images": images,
         "predictions": predictions,
         "discarded_nonpositive_boxes": discarded_nonpositive_boxes,
+        "input_protocol": (
+            "Ultralytics RT-DETR square stretch, then boxes restored to original-image pixels"
+            if model_name == "rtdetr_l"
+            else "Ultralytics YOLO letterbox, then boxes restored to original-image pixels"
+        ),
     }
 
 
@@ -167,8 +185,7 @@ def _preview_images(images: list[dict[str, Any]], count: int) -> list[dict[str, 
     """按来源前缀轮转选择确定性的样本。"""
     by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for image in images:
-        source = Path(image["file_name"]).stem.split("_", 1)[0]
-        by_source[source].append(image)
+        by_source[Path(image["file_name"]).stem.split("_", 1)[0]].append(image)
     for source in by_source:
         by_source[source].sort(key=lambda image: (str(image["file_name"]), int(image["id"])))
 
@@ -212,7 +229,9 @@ def render_prediction_previews(
 
     data_root = Path(config["data"]).parent
     preview_paths: list[str] = []
-    for index, image_data in enumerate(_preview_images(images, int(config["evaluation"]["preview_count"])), start=1):
+    for index, image_data in enumerate(
+        _preview_images(images, int(config["evaluation"]["preview_count"])), start=1
+    ):
         image_id = int(image_data["id"])
         image_path = data_root / "images" / image_data["file_name"]
         with Image.open(image_path) as source_image:
@@ -221,7 +240,6 @@ def render_prediction_previews(
         line_width = max(2, min(preview.size) // 200)
         draw.rectangle((0, 0, preview.width, 22), fill=(0, 0, 0))
         draw.text((4, 4), "GT green | prediction orange", fill=(255, 255, 255))
-
         for x, y, width, height in gt_by_image[image_id]:
             draw.rectangle((x, y, x + width, y + height), outline=(0, 220, 0), width=line_width)
         for prediction in predictions_by_image[image_id]:
@@ -244,13 +262,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _class_names(model: YOLO) -> dict[int, str]:
-    """在导出类别标识前，验证冻结权重仅包含 crack 类别。"""
+def _class_names(model: Any) -> dict[int, str]:
+    """在导出类别标识前，验证 Ultralytics 冻结权重仅包含 crack 类别。"""
     names = model.names
-    if isinstance(names, dict):
-        normalized = {int(index): str(name) for index, name in names.items()}
-    else:
-        normalized = {index: str(name) for index, name in enumerate(names)}
+    normalized = {int(index): str(name) for index, name in names.items()} if isinstance(names, dict) else {
+        index: str(name) for index, name in enumerate(names)
+    }
     if normalized != {0: "crack"}:
         raise RuntimeError(f"Frozen checkpoint must contain exactly class 0=crack, got {normalized}")
     return normalized
@@ -269,13 +286,13 @@ def _json_value(value: Any) -> Any:
 
 
 def _preview_paths(output_dir: Path, previews: list[str]) -> list[str]:
-    """解析渲染器返回的路径；这些路径有意相对于 output_dir.parent。"""
     return [str((output_dir.parent / preview).resolve()) for preview in previews]
 
 
 def _write_summary_csv(
     output_dir: Path,
     weights_path: Path,
+    model_name: str,
     split: str,
     metrics: dict[str, Any],
     benchmark: dict[str, Any],
@@ -286,6 +303,7 @@ def _write_summary_csv(
     summary_path = output_dir / "summary.csv"
     row = {
         "model": str(weights_path),
+        "architecture": model_name,
         "split": split,
         "conditions": benchmark["measurement_conditions"]["label"],
         "P": metrics["precision"],
@@ -308,46 +326,96 @@ def _write_summary_csv(
 
 
 def _benchmark_summary(benchmark: dict[str, Any]) -> dict[str, Any]:
-    """在摘要中引用 benchmark.json 的原始计时样本，避免重复写入。"""
     return {
         "protocol": benchmark["protocol"],
         "representative_images": benchmark["representative_images"],
         "measurement_conditions": benchmark["measurement_conditions"],
         "profile": benchmark["profile"],
-        "latency": {
-            key: value
-            for key, value in benchmark["latency"].items()
-            if key != "samples_ms"
-        },
+        "latency": {key: value for key, value in benchmark["latency"].items() if key != "samples_ms"},
     }
 
 
 def _resolve_weights_path(weights_path: Path) -> Path:
-    """解析并检查要评测的冻结权重文件。"""
     resolved_path = weights_path.resolve()
     if not resolved_path.is_file():
         raise FileNotFoundError(f"Evaluation weights do not exist: {resolved_path}")
     return resolved_path
 
 
+def _requested_model_name(config: dict[str, Any]) -> str | None:
+    model_name = config.get("model_name")
+    if model_name is None:
+        return None
+    if not isinstance(model_name, str) or model_name not in _SUPPORTED_MODEL_NAMES:
+        raise ValueError(f"model_name must be one of {sorted(_SUPPORTED_MODEL_NAMES)}, got {model_name!r}")
+    return model_name
+
+
+def _torchvision_checkpoint_model_name(weights_path: Path) -> str | None:
+    """Identify only project TorchVision checkpoints by their required metadata."""
+    try:
+        checkpoint = torch.load(weights_path, map_location="cpu", weights_only=True)
+    except UnpicklingError:
+        return None
+    if not isinstance(checkpoint, dict):
+        return None
+    model_name = checkpoint.get("model_name")
+    return model_name if isinstance(model_name, str) and model_name in TORCHVISION_MODEL_NAMES else None
+
+
+def _model_name_from_ultralytics_checkpoint(model: Any) -> str:
+    """从真实架构和原生配置识别模型，包含官方文件名 yolo11s。"""
+    if model.__class__.__name__ == "RTDETR":
+        return "rtdetr_l"
+    aliases = {"yolov8s": "yolov8s", "yolov11s": "yolov11s", "yolo11s": "yolov11s"}
+    hints = [getattr(model.model, "yaml", {}).get("yaml_file")]
+    checkpoint = getattr(model, "ckpt", None)
+    if isinstance(checkpoint, dict):
+        for key in ("train_args", "args"):
+            arguments = checkpoint.get(key)
+            if isinstance(arguments, dict):
+                hints.append(arguments.get("model"))
+    hints.append(getattr(model, "overrides", {}).get("model"))
+    for hint in hints:
+        if isinstance(hint, str) and Path(hint).stem in aliases:
+            return aliases[Path(hint).stem]
+    raise ValueError("Cannot determine Ultralytics architecture from checkpoint metadata; pass --model")
+
+
 def _load_checkpoint_prediction(
-    config: dict[str, Any],
-    weights_path: Path,
-    split: str,
-) -> tuple[dict[int, str], dict[str, Any]]:
-    """载入指定权重，并对目标数据划分生成预测结果。"""
-    model = YOLO(str(weights_path))
+    config: dict[str, Any], weights_path: Path, split: str
+) -> tuple[str, dict[int, str], dict[str, Any]]:
+    """加载五种支持架构之一并生成统一 COCO 格式预测。"""
+    requested_name = _requested_model_name(config)
+    checkpoint_torchvision_name = _torchvision_checkpoint_model_name(weights_path)
+    if checkpoint_torchvision_name is not None:
+        if requested_name is not None and requested_name != checkpoint_torchvision_name:
+            raise ValueError(
+                f"TorchVision checkpoint model_name {checkpoint_torchvision_name!r} does not match "
+                f"requested {requested_name!r}"
+            )
+        model, model_name = load_torchvision_model(weights_path, config)
+        gt_path, annotations, images = load_split_annotations(config, split)
+        prediction = predict_torchvision_split(model, model_name, config, images, split=split)
+        prediction.update({"ground_truth": gt_path, "annotations": annotations, "images": images})
+        prediction["internal_label_mapping"] = (
+            "Faster R-CNN foreground label 1 -> COCO category_id 1"
+            if model_name == "fasterrcnn_resnet50_fpn"
+            else "RetinaNet sigmoid foreground label 0 -> COCO category_id 1"
+        )
+        return model_name, {0: "crack"}, prediction
+
+    if requested_name in TORCHVISION_MODEL_NAMES:
+        raise ValueError(f"TorchVision checkpoint metadata is missing or incompatible: {weights_path}")
+    model = load_ultralytics_model(weights_path, requested_name)
+    model_name = requested_name or _model_name_from_ultralytics_checkpoint(model)
     class_names = _class_names(model)
-    prediction = predict_split(model, config, split=split)
-    return class_names, prediction
+    return model_name, class_names, predict_split(model, config, split=split, model_name=model_name)
 
 
 def _evaluate_and_render(
-    config: dict[str, Any],
-    prediction: dict[str, Any],
-    output_dir: Path,
+    config: dict[str, Any], prediction: dict[str, Any], output_dir: Path
 ) -> tuple[dict[str, Any], list[str]]:
-    """计算指标并渲染预测预览图。"""
     metrics = evaluate_predictions(
         prediction["ground_truth"],
         prediction["predictions"],
@@ -357,19 +425,61 @@ def _evaluate_and_render(
         max_detections=int(config["evaluation"]["max_detections"]),
     )
     previews = render_prediction_previews(
-        prediction["annotations"],
-        prediction["images"],
-        prediction["predictions"],
-        config,
-        output_dir,
+        prediction["annotations"], prediction["images"], prediction["predictions"], config, output_dir
     )
     return metrics, previews
+
+def evaluate_model(
+    config: dict[str, Any],
+    model: Any,
+    model_name: str,
+    split: str,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """直接评测内存模型，不写临时 checkpoint 或重载网络。
+
+    训练循环可在每个 epoch 结束时调用本函数取得 ``metrics["map50_95"]``；
+    它仍写出与冻结权重评测相同的预测、COCO 指标、PR 曲线和预览图。
+    """
+    if model_name not in _SUPPORTED_MODEL_NAMES:
+        raise ValueError(f"model_name must be one of {sorted(_SUPPORTED_MODEL_NAMES)}, got {model_name!r}")
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    gt_path, annotations, images = load_split_annotations(config, split)
+    if model_name in TORCHVISION_MODEL_NAMES:
+        prediction = predict_torchvision_split(model, model_name, config, images, split=split)
+        prediction["internal_label_mapping"] = (
+            "Faster R-CNN foreground label 1 -> COCO category_id 1"
+            if model_name == "fasterrcnn_resnet50_fpn"
+            else "RetinaNet sigmoid foreground label 0 -> COCO category_id 1"
+        )
+        class_names = {0: "crack"}
+    else:
+        class_names = _class_names(model)
+        prediction = predict_split(model, config, split=split, model_name=model_name)
+    prediction.update({"ground_truth": gt_path, "annotations": annotations, "images": images})
+    metrics, previews = _evaluate_and_render(config, prediction, output_dir)
+    return {
+        "architecture": model_name,
+        "split": split,
+        "classes": class_names,
+        "metrics": metrics,
+        "discarded_nonpositive_boxes": prediction["discarded_nonpositive_boxes"],
+        "previews": _preview_paths(output_dir, previews),
+        "artifacts": {
+            "output_dir": str(output_dir),
+            "predictions_coco": str((output_dir / "predictions_coco.json").resolve()),
+            "metrics": str((output_dir / "metrics.json").resolve()),
+            "pr_curve": str((output_dir / "pr_curve.png").resolve()),
+        },
+    }
 
 
 def _build_evaluation_summary(
     config: dict[str, Any],
     weights_path: Path,
     checkpoint_sha256: str,
+    model_name: str,
     split: str,
     output_dir: Path,
     class_names: dict[int, str],
@@ -377,24 +487,24 @@ def _build_evaluation_summary(
     metrics: dict[str, Any],
     previews: list[str],
 ) -> dict[str, Any]:
-    """组装基础评测摘要，不执行性能测量或写盘。"""
     return {
-        "weights": {
-            "path": str(weights_path),
-            "sha256": checkpoint_sha256,
-        },
+        "weights": {"path": str(weights_path), "sha256": checkpoint_sha256},
+        "architecture": model_name,
         "split": split,
         "classes": class_names,
         "configuration": {
-            "source_path": str(config["config_path"]),
+            "source_path": str(config.get("config_path", "")),
             "resolved": _json_value(config),
         },
         "prediction_protocol": {
             "coordinates": "original-image pixel xywh in COCO predictions",
+            "input": prediction["input_protocol"],
             "score_floor": config["evaluation"]["score_floor"],
-            "nms_iou": config["evaluation"]["nms_iou"],
+            "nms_iou": None if model_name == "rtdetr_l" else config["evaluation"]["nms_iou"],
             "max_detections": config["evaluation"]["max_detections"],
-            "empty_box_policy": "Discard boxes with non-positive width or height after clipping; retain all positive sizes.",
+            "postprocess": "native RT-DETR query decoding without added NMS; score-sorted top-K cap" if model_name == "rtdetr_l" else "detector-native postprocess with score-sorted top-K cap",
+            "internal_label_mapping": prediction.get("internal_label_mapping", "Ultralytics class 0 -> COCO category_id 1"),
+            "empty_box_policy": "Clip to original-image bounds, discard boxes with non-positive width or height, and retain all positive sizes.",
             "discarded_nonpositive_boxes": prediction["discarded_nonpositive_boxes"],
             "fixed_threshold_confidence": config["evaluation"]["confidence"],
             "fixed_threshold_match_iou": config["evaluation"]["match_iou"],
@@ -417,25 +527,21 @@ def _append_benchmark_summary(
     summary: dict[str, Any],
     config: dict[str, Any],
     weights_path: Path,
+    model_name: str,
     split: str,
     output_dir: Path,
     metrics: dict[str, Any],
 ) -> None:
-    """测量性能，并将性能产物和摘要附加到评测结果。"""
-    benchmark = benchmark_yolo(weights_path, config, output_dir)
-    summary_csv = _write_summary_csv(output_dir, weights_path, split, metrics, benchmark)
+    benchmark = benchmark_checkpoint(weights_path, config, output_dir, model_name=model_name)
+    summary_csv = _write_summary_csv(output_dir, weights_path, model_name, split, metrics, benchmark)
     summary["artifacts"]["benchmark"] = str((output_dir / "benchmark.json").resolve())
     summary["artifacts"]["summary_csv"] = str(summary_csv.resolve())
     summary["benchmark"] = _benchmark_summary(benchmark)
 
 
 def _write_evaluation_summary(output_dir: Path, summary: dict[str, Any]) -> Path:
-    """将完整评测摘要写入固定的 JSON 产物文件。"""
     summary_path = output_dir / "evaluation_summary.json"
-    summary_path.write_text(
-        json.dumps(summary, ensure_ascii=False, allow_nan=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, allow_nan=False, indent=2) + "\n", encoding="utf-8")
     return summary_path
 
 
@@ -446,17 +552,18 @@ def evaluate_checkpoint(
     output_dir: Path,
     include_benchmark: bool = False,
 ) -> dict[str, Any]:
-    """评测指定冻结权重，并将全部评测产物写入输出目录。"""
+    """评测指定冻结权重，并将全部统一评测产物写入输出目录。"""
     weights_path = _resolve_weights_path(weights_path)
     checkpoint_sha256 = _sha256(weights_path)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    class_names, prediction = _load_checkpoint_prediction(config, weights_path, split)
+    model_name, class_names, prediction = _load_checkpoint_prediction(config, weights_path, split)
     metrics, previews = _evaluate_and_render(config, prediction, output_dir)
     summary = _build_evaluation_summary(
         config,
         weights_path,
         checkpoint_sha256,
+        model_name,
         split,
         output_dir,
         class_names,
@@ -465,6 +572,6 @@ def evaluate_checkpoint(
         previews,
     )
     if include_benchmark:
-        _append_benchmark_summary(summary, config, weights_path, split, output_dir, metrics)
+        _append_benchmark_summary(summary, config, weights_path, model_name, split, output_dir, metrics)
     _write_evaluation_summary(output_dir, summary)
     return summary

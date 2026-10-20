@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""基于 Ultralytics 架构的训练脚本，用于训练: YOLOv8s YOLO11s
+"""基于 Ultralytics 架构训练裂缝检测模型。
 
-在 cv_task 环境、项目根目录中启动训练：
-python script/train_ultralytics.py \
+完整命令（YOLOv8s）：
+uv run --no-sync python script/train_ultralytics.py \
   --config configs/train_ultralytics.yaml \
   --epochs 150 \
+  --batch 8 \
+  --workers 0 \
   --model yolov8s
+训练 YOLOv11s 或 RT-DETR-L 时，将 --model 分别改为 yolov11s 或 rtdetr_l。
 
-恢复尚未完成的训练：
-python script/train_ultralytics.py \
-  --resume outputs/training/yolov8s_formal/weights/last.pt
+恢复尚未完成的训练（自动按运行快照恢复 YOLO 或 RT-DETR 类）：
+uv run --no-sync python script/train_ultralytics.py \
+  --resume outputs/training/rtdetr_l_formal/weights/last.pt
 
 参数说明：
---config：训练超参数
---epochs：训练轮数：默认 150 轮
---model：训练模型：yolov8s  yolov11s
---resume：恢复未完成的原生检查点，单独使用，不与其他训练参数组合
+--config：训练超参数 YAML，省略时使用 configs/train_ultralytics.yaml。
+--epochs：覆盖新训练的总轮数，必须大于零。
+--batch：覆盖新训练的每设备批次大小，必须大于零。
+--workers：覆盖新训练的数据加载工作进程数，必须为非负整数。
+--model：新训练模型：yolov8s、yolov11s、rtdetr_l。
+--resume：恢复未完成的原生检查点；必须单独使用，不与其他训练参数组合。
 """
 
 from __future__ import annotations
@@ -33,8 +38,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import load_config
 # 先配置项目内的缓存目录和 TensorBoard，再使用 Ultralytics。
-from src.evaluation.yolo import evaluate_checkpoint
-from ultralytics import YOLO
+from src.evaluation.detection import evaluate_checkpoint
+from src.models.ultralytics import load_ultralytics_model
+from ultralytics.engine.model import Model
 from ultralytics.utils.callbacks import tensorboard as tensorboard_callbacks
 from ultralytics.utils.files import increment_path
 
@@ -42,17 +48,29 @@ DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "train_ultralytics.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """解析模型选择、超参数覆盖和原生续训参数。"""
+    """解析模型选择、训练超参数覆盖和原生续训参数。"""
     parser = argparse.ArgumentParser(description="使用 Ultralytics 训练裂缝检测模型")
     parser.add_argument("--config", type=Path, help="共用训练 YAML，省略时使用默认配置")
     parser.add_argument("--epochs", type=int, help="训练轮数：默认 150 轮")
-    parser.add_argument("--model", choices=("yolov8s", "yolov11s"), help="训练模型：yolov8s  yolov11s")
+    parser.add_argument("--batch", type=int, help="覆盖新训练的每设备批次大小")
+    parser.add_argument("--workers", type=int, help="覆盖新训练的数据加载工作进程数")
+    parser.add_argument(
+        "--model",
+        choices=("yolov8s", "yolov11s", "rtdetr_l"),
+        help="训练模型：yolov8s  yolov11s  rtdetr_l",
+    )
     parser.add_argument("--resume", type=Path, help="未完成运行的 weights/last.pt")
     args = parser.parse_args(argv)
     if args.epochs is not None and args.epochs <= 0:
         parser.error("--epochs 必须大于零")
-    if args.resume is not None and any(value is not None for value in (args.config, args.epochs, args.model)):
-        parser.error("--resume 使用原运行的配置，不能与 --config、--epochs 或 --model 同时使用")
+    if args.batch is not None and args.batch <= 0:
+        parser.error("--batch 必须大于零")
+    if args.workers is not None and args.workers < 0:
+        parser.error("--workers 必须为非负整数")
+    if args.resume is not None and any(
+        value is not None for value in (args.config, args.epochs, args.batch, args.workers, args.model)
+    ):
+        parser.error("--resume 使用原运行的配置，不能与其他训练参数同时使用")
     return args
 
 
@@ -76,23 +94,31 @@ def prepare_training_data(data_yaml: Path, run_dir: Path) -> Path:
     return training_data
 
 
-def train(args: argparse.Namespace) -> tuple[YOLO, dict]:
+def train(args: argparse.Namespace) -> tuple[Model, dict]:
     """选取预训练模型并训练；续训直接交给 Ultralytics 恢复优化器等状态。"""
     if args.resume is not None:
         checkpoint = args.resume.resolve()
         run_dir = checkpoint.parent.parent
         config = load_config(run_dir / "config.yaml")
-        model = YOLO(str(checkpoint))
+        model = load_ultralytics_model(checkpoint, config["model_name"])
     else:
         config = load_config(args.config or DEFAULT_CONFIG)
         config["model_name"] = args.model or "yolov8s"
         config["name"] = f"{config['model_name']}_formal"
-        if args.epochs is not None:
-            config["training"]["epochs"] = args.epochs
+        training = dict(config["training"])
+        training.update(config.get("model_overrides", {}).get(config["model_name"], {}))
+        for name, value in (
+            ("epochs", args.epochs),
+            ("batch", args.batch),
+            ("workers", args.workers),
+        ):
+            if value is not None:
+                training[name] = value
+        config["training"] = training
         weights = config["models"][config["model_name"]]
         if not weights.is_file():
             raise FileNotFoundError(f"请先下载预训练权重：{weights}")
-        model = YOLO(str(weights))
+        model = load_ultralytics_model(weights, config["model_name"])
         run_dir = increment_path(config["project"] / config["name"]).resolve()
 
     # 只保留必要的防覆盖检查，不改写已有正式模型。
@@ -119,7 +145,7 @@ def train(args: argparse.Namespace) -> tuple[YOLO, dict]:
     return model, config
 
 
-def save_results(model: YOLO, config: dict) -> dict:
+def save_results(model: Model, config: dict) -> dict:
     """关闭事件文件、归档原生训练产物，再对 best.pt 执行统一验证。"""
     run_dir = Path(model.trainer.save_dir).resolve()
     writer = tensorboard_callbacks.WRITER

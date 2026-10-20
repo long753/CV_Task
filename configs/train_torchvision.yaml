@@ -1,0 +1,50 @@
+# TorchVision 原生检测训练配置：所有路径相对此文件；训练期间不使用测试集。
+# models 的本地文件必须是官方 COCO state_dict；脚本不会下载任何权重。
+models:
+  fasterrcnn_resnet50_fpn: ../models/pretrained/fasterrcnn_resnet50_fpn_coco.pth
+  retinanet_resnet50_fpn: ../models/pretrained/retinanet_resnet50_fpn_coco.pth
+data: ../datasets/processed/crack_detection/data.yaml
+project: ../outputs/training
+trained_models: ../models/trained
+
+training:
+  epochs: 150
+  imgsz: 640
+  batch: 2
+  nbs: 16
+  device: 0
+  workers: 2
+  seed: 42
+  deterministic: true
+  amp: true
+  optimizer: SGD
+  lr0: 0.005
+  momentum: 0.9
+  weight_decay: 0.0005
+  warmup_epochs: 3
+  lrf: 0.01
+
+# CUDA RoIAlign 的确定性回退会编译额外实现并显著增大显存；使用原生 CUDA 算子。
+# 随机种子仍为 42，但 Faster R-CNN 不保证逐位确定性。
+model_overrides:
+  fasterrcnn_resnet50_fpn:
+    deterministic: false
+
+augmentation:
+  horizontal_flip: 0.5
+  brightness: 0.1
+
+evaluation:
+  score_floor: 0.001
+  confidence: 0.25
+  match_iou: 0.5
+  nms_iou: 0.7
+  max_detections: 100
+  preview_count: 6
+
+benchmark:
+  imgsz: 640
+  precision: fp32
+  warmup: 50
+  iterations: 300
+  image_count: 6

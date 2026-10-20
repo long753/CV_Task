@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 import torch
 
-from src.evaluation.yolo import _coco_detections, predict_split
+from src.evaluation.detection import _coco_detections, predict_split
 from ultralytics import YOLO
 from ultralytics.engine.results import Boxes
 

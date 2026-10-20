@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """审计、导出或独立验证裂缝检测数据集。
 
-在 cv_task 项目根目录执行：
-python script/prepare_dataset.py \
-  --config configs/preprocess.yaml \
+在 cv_task 项目根目录执行，无需激活环境；首次使用先运行 uv sync --locked --managed-python：
+uv run python script/prepare_dataset.py \
   --stage validate \
   --output datasets/processed/crack_detection
 
 参数说明：
 --config：预处理配置文件路径，默认 configs/preprocess.yaml。
 --stage：执行阶段；audit 读取原始数据并生成审计报告，all 执行完整预处理流程，
-         validate 独立验证已导出的数据集。
+         validate 独立验证已导出的数据集，不读取原始数据或预处理配置，必须指定 --output。
 --output：新数据集的输出目录；当 --stage 为 validate 时，指定已有导出数据集目录。
 """
 

@@ -1,13 +1,14 @@
 # 统一正式训练配置：所有路径相对此文件；训练期间不使用测试集。
-# models 中选择 yolov8s 或 yolov11s，其值为对应的 COCO 预训练权重。
+# models 中选择 yolov8s、yolov11s 或 rtdetr_l，其值为对应的 COCO 预训练权重。
 models:
   yolov8s: ../models/pretrained/yolov8s.pt
   yolov11s: ../models/pretrained/yolo11s.pt
+  rtdetr_l: ../models/pretrained/rtdetr-l.pt
 data: ../datasets/processed/crack_detection/data.yaml
 project: ../outputs/training
 trained_models: ../models/trained
 
-# 以下为原生 Ultralytics train 参数，两个正式模型共用同一组设置。
+# 以下为原生 Ultralytics train 参数；RT-DETR 的专属覆盖在其后声明。
 training:
   epochs: 150
   fraction: 1.0
@@ -50,6 +51,17 @@ training:
   save: true
   save_period: 25
   exist_ok: false
+
+# RT-DETR 原生训练器不支持 deterministic grid_sample，AMP 在匈牙利匹配中可能产生 NaN。
+# 训练脚本先合并此处覆盖，再以 --epochs 覆盖，保存至本次运行的 config.yaml。
+model_overrides:
+  rtdetr_l:
+    optimizer: AdamW
+    lr0: 0.0001
+    weight_decay: 0.0001
+    warmup_epochs: 0.0
+    amp: false
+    deterministic: false
 
 evaluation:
   score_floor: 0.001
