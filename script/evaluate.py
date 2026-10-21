@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """使用冻结的五种裂缝检测权重执行统一 COCO 评测。
 
-在项目根目录执行，无需激活环境：
+Ultralytics 训练示例：
 uv run --no-sync python script/evaluate.py \
-  --config configs/train_ultralytics.yaml \
-  --model rtdetr_l \
-  --weights models/trained/rtdetr_l_formal/best.pt \
-  --split val --output outputs/evaluation/rtdetr_l_val --benchmark
+  --config configs/ultralytics.yaml \
+  --model yolov8s \
+  --weights models/trained/yolov8s_formal/best.pt \
+  --split test \
+  --output outputs/evaluation/yolov8s --benchmark
 
-TorchVision 示例：
+TorchVision 训练示例：
 uv run --no-sync python script/evaluate.py \
-  --config configs/train_torchvision.yaml \
+  --config configs/torchvision.yaml \
   --model fasterrcnn_resnet50_fpn \
   --weights models/trained/fasterrcnn_resnet50_fpn_formal/best.pt \
-  --split val --output outputs/evaluation/fasterrcnn_val
+  --split test \
+  --output outputs/evaluation/fasterrcnn_resnet50_fpn --benchmark
 
 参数说明：
---config：训练时保存的同类 YAML 配置文件。
---model：可选的架构选择；支持 yolov8s、yolov11s、rtdetr_l、
-  fasterrcnn_resnet50_fpn、retinanet_resnet50_fpn。省略时从 checkpoint
-  元数据识别，无法识别的 Ultralytics checkpoint 会要求显式提供。
+--config：评测参数
+--model：评测模型
+    Ultralytics：yolov8s、yolov11s、rtdetr_l
+    TorchVision：fasterrcnn_resnet50_fpn、retinanet_resnet50_fpn
 --weights：必填，要评测的冻结权重文件路径。
---split：要评测的已配置数据划分，只能为 val 或 test，默认 val。
---output：必填，评测 JSON、曲线、预览图及可选性能结果的输出目录。
---benchmark：提供时，额外以 6 张固定验证图测量端到端性能。
+--split：要评测的已配置数据划分:test, val
+--output：输出目录
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=PROJECT_ROOT / "configs" / "train_ultralytics.yaml",
+        default=PROJECT_ROOT / "configs" / "ultralytics.yaml",
         help="统一正式实验 YAML 配置文件",
     )
     parser.add_argument("--weights", type=Path, required=True, help="必填，要评测的冻结权重文件")

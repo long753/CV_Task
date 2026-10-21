@@ -3,7 +3,7 @@
 
 完整命令（Faster R-CNN）：
 uv run --no-sync python script/train_torchvision.py \
-  --config configs/train_torchvision.yaml \
+  --config configs/torchvision.yaml \
   --epochs 150 \
   --batch 8 \
   --workers 0 \
@@ -15,7 +15,7 @@ uv run --no-sync python script/train_torchvision.py \
   --resume outputs/training/fasterrcnn_resnet50_fpn_formal/weights/last.pt
 
 参数说明：
---config：训练超参数 YAML，省略时使用 configs/train_torchvision.yaml。
+--config：训练超参数 YAML，省略时使用 configs/torchvision.yaml。
 --epochs：覆盖新训练的总轮数，必须大于零。
 --batch：覆盖新训练的每设备批次大小，必须大于零。
 --workers：覆盖新训练的数据加载工作进程数，必须为非负整数。
@@ -56,7 +56,7 @@ from src.data.detection_dataset import DetectionDataset, collate_fn
 from src.evaluation.detection import evaluate_checkpoint, evaluate_model
 from src.models.torchvision import MODEL_NAMES, build_model, configure_determinism, load_model
 
-DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "train_torchvision.yaml"
+DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "torchvision.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

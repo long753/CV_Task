@@ -3,7 +3,7 @@
 
 完整命令（YOLOv8s）：
 uv run --no-sync python script/train_ultralytics.py \
-  --config configs/train_ultralytics.yaml \
+  --config configs/ultralytics.yaml \
   --epochs 150 \
   --batch 8 \
   --workers 0 \
@@ -15,7 +15,7 @@ uv run --no-sync python script/train_ultralytics.py \
   --resume outputs/training/rtdetr_l_formal/weights/last.pt
 
 参数说明：
---config：训练超参数 YAML，省略时使用 configs/train_ultralytics.yaml。
+--config：训练超参数 YAML，省略时使用 configs/ultralytics.yaml。
 --epochs：覆盖新训练的总轮数，必须大于零。
 --batch：覆盖新训练的每设备批次大小，必须大于零。
 --workers：覆盖新训练的数据加载工作进程数，必须为非负整数。
@@ -44,7 +44,7 @@ from ultralytics.engine.model import Model
 from ultralytics.utils.callbacks import tensorboard as tensorboard_callbacks
 from ultralytics.utils.files import increment_path
 
-DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "train_ultralytics.yaml"
+DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "ultralytics.yaml"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
