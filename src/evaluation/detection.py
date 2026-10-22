@@ -29,9 +29,9 @@ from src.evaluation.benchmark import benchmark_checkpoint
 from src.evaluation.metrics import evaluate_predictions
 from src.evaluation.prediction import coco_detections_from_xyxy
 from src.evaluation.torchvision import predict_torchvision_split
-from src.models.torchvision import MODEL_NAMES as TORCHVISION_MODEL_NAMES
-from src.models.torchvision import load_model as load_torchvision_model
-from src.models.ultralytics import load_ultralytics_model
+from src.model.torchvision import MODEL_NAMES as TORCHVISION_MODEL_NAMES
+from src.model.torchvision import load_model as load_torchvision_model
+from src.model.ultralytics import load_ultralytics_model
 
 _ALLOWED_SPLITS = {"val", "test"}
 _ULTRALYTICS_MODEL_NAMES = frozenset({"yolov8s", "yolov11s", "rtdetr_l"})

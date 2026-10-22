@@ -18,10 +18,10 @@ import torch
 from thop import profile
 
 from src.evaluation.torchvision import detect_bgr_torchvision
-from src.models.torchvision import MODEL_NAMES as TORCHVISION_MODEL_NAMES
-from src.models.torchvision import load_model as load_torchvision_model
-from src.models.torchvision import configure_determinism
-from src.models.ultralytics import load_ultralytics_model
+from src.model.torchvision import MODEL_NAMES as TORCHVISION_MODEL_NAMES
+from src.model.torchvision import load_model as load_torchvision_model
+from src.model.torchvision import configure_determinism
+from src.model.ultralytics import load_ultralytics_model
 
 
 def _required_mapping(config: dict[str, Any], key: str) -> dict[str, Any]:

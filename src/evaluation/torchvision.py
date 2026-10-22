@@ -11,7 +11,7 @@ from PIL import Image
 from torchvision.transforms.functional import pil_to_tensor
 
 from src.evaluation.prediction import coco_detections_from_xyxy
-from src.models.torchvision import configure_determinism
+from src.model.torchvision import configure_determinism
 
 _TORCHVISION_LABELS = {
     "fasterrcnn_resnet50_fpn": {1: 1},

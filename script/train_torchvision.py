@@ -54,7 +54,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config import load_config
 from src.data.detection_dataset import DetectionDataset, collate_fn
 from src.evaluation.detection import evaluate_checkpoint, evaluate_model
-from src.models.torchvision import MODEL_NAMES, build_model, configure_determinism, load_model
+from src.model.torchvision import MODEL_NAMES, build_model, configure_determinism, load_model
 
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "torchvision.yaml"
 

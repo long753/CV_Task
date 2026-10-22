@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config import load_config
 # 先配置项目内的缓存目录和 TensorBoard，再使用 Ultralytics。
 from src.evaluation.detection import evaluate_checkpoint
-from src.models.ultralytics import load_ultralytics_model
+from src.model.ultralytics import load_ultralytics_model
 from ultralytics.engine.model import Model
 from ultralytics.utils.callbacks import tensorboard as tensorboard_callbacks
 from ultralytics.utils.files import increment_path
