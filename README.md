@@ -127,8 +127,3 @@ uv 环境下，可执行 `bash script/evaluate_all.sh` 连续评测五个模型�
 | `summary.csv` | 检测与性能指标汇总，便于制作对比表，仅启用 `--benchmark` 时生成 |
 
 指标基于所选划分的全部图片计算，预览只展示部分样本。横向对比前统一输入尺寸、评测阈值和测速硬件，不在测试集上调参。
-
-
-rsync -avhP \
-    root@18396:/root/auto-tmp/cv_task/outputs/training \
-    ~/project/robot/cv_task/outputs/training
